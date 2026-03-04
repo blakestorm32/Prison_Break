@@ -2,6 +2,7 @@ package render
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"prison-break/internal/client/input"
@@ -173,6 +174,61 @@ func TestShellActionPanelAbilityUsesRoleAbilityAndTargetsLocalRoomPlayer(t *test
 	}
 }
 
+func TestShellActionPanelAbilityUsesAssignedAbilityWhenPresent(t *testing.T) {
+	extraPlayers := []model.PlayerState{
+		{
+			ID:            "p2",
+			Name:          "Target",
+			Alive:         true,
+			CurrentRoomID: gamemap.RoomCorridorMain,
+			Position:      model.Vector2{X: 6, Y: 5},
+		},
+	}
+	shell := newShellForActionPanelTest(t, model.PlayerState{
+		ID:              "p1",
+		Name:            "Local",
+		Alive:           true,
+		Faction:         model.FactionAuthority,
+		Role:            model.RoleDeputy,
+		AssignedAbility: model.AbilityTracker,
+		CurrentRoomID:   gamemap.RoomCorridorMain,
+		Position:        model.Vector2{X: 5, Y: 5},
+	}, extraPlayers)
+
+	frame := 0
+	shell.inputSnapshotProvider = func() input.InputSnapshot {
+		frame++
+		switch frame {
+		case 1:
+			return input.InputSnapshot{PanelAbilitiesPressed: true}
+		case 3:
+			return input.InputSnapshot{PanelUsePressed: true}
+		default:
+			return input.InputSnapshot{}
+		}
+	}
+
+	_ = shell.Update()
+	_ = shell.DrainOutgoingCommands()
+	_ = shell.Update()
+	_ = shell.DrainOutgoingCommands()
+	_ = shell.Update()
+	commands := shell.DrainOutgoingCommands()
+
+	useAbility, found := findCommandByType(commands, model.CmdUseAbility)
+	if !found {
+		t.Fatalf("expected use-ability command from abilities panel, got %+v", commands)
+	}
+
+	var payload model.AbilityUsePayload
+	if err := json.Unmarshal(useAbility.Payload, &payload); err != nil {
+		t.Fatalf("decode ability payload: %v", err)
+	}
+	if payload.Ability != model.AbilityTracker {
+		t.Fatalf("expected assigned tracker ability payload, got %+v", payload)
+	}
+}
+
 func TestShellActionPanelMobileTouchAugmentsSnapshotButtons(t *testing.T) {
 	shell := newShellForActionPanelTest(t, model.PlayerState{
 		ID:      "p1",
@@ -225,7 +281,7 @@ func TestShellActionPanelMarketUseGeneratesPurchaseCommandWhenEligible(t *testin
 		frame++
 		switch frame {
 		case 1:
-			return input.InputSnapshot{PanelMarketPressed: true}
+			return input.InputSnapshot{InteractPressed: true}
 		case 3:
 			return input.InputSnapshot{PanelUsePressed: true}
 		default:
@@ -275,7 +331,7 @@ func TestShellActionPanelMarketUseBlockedWhenNotAffordable(t *testing.T) {
 		frame++
 		switch frame {
 		case 1:
-			return input.InputSnapshot{PanelMarketPressed: true}
+			return input.InputSnapshot{InteractPressed: true}
 		case 3:
 			return input.InputSnapshot{PanelUsePressed: true}
 		default:
@@ -303,6 +359,9 @@ func TestShellActionPanelEscapeUseGeneratesInteractCommand(t *testing.T) {
 		Faction:       model.FactionPrisoner,
 		Role:          model.RoleGangMember,
 		CurrentRoomID: gamemap.RoomCourtyard,
+		Inventory: []model.ItemStack{
+			{Item: model.ItemShovel, Quantity: 1},
+		},
 	}, nil)
 
 	frame := 0
@@ -336,6 +395,157 @@ func TestShellActionPanelEscapeUseGeneratesInteractCommand(t *testing.T) {
 	}
 	if payload.EscapeRoute != model.EscapeRouteCourtyardDig {
 		t.Fatalf("expected default escape route selection courtyard_dig, got %+v", payload)
+	}
+}
+
+func TestShellActionPanelMarketHotkeyShowsInstructionWithoutOpeningModal(t *testing.T) {
+	shell := newShellForActionPanelTest(t, model.PlayerState{
+		ID:            "p1",
+		Name:          "Buyer",
+		Alive:         true,
+		Faction:       model.FactionPrisoner,
+		Role:          model.RoleGangMember,
+		CurrentRoomID: gamemap.RoomCourtyard,
+	}, nil)
+	setMarketStateForPanelTest(t, shell, model.PhaseNight, gamemap.RoomCourtyard)
+
+	shell.inputSnapshotProvider = func() input.InputSnapshot {
+		return input.InputSnapshot{PanelMarketPressed: true}
+	}
+
+	_ = shell.Update()
+	commands := shell.DrainOutgoingCommands()
+	if _, found := findCommandByType(commands, model.CmdBlackMarketBuy); found {
+		t.Fatalf("expected market hotkey not to dispatch purchase command, got %+v", commands)
+	}
+	if shell.panelMode != actionPanelNone {
+		t.Fatalf("expected market hotkey not to open modal, got mode %d", shell.panelMode)
+	}
+	if !strings.Contains(strings.ToLower(shell.panelLocalHint), "interact") {
+		t.Fatalf("expected market hotkey guidance to mention interact, got %q", shell.panelLocalHint)
+	}
+}
+
+func TestShellActionPanelMarketInteractBlockedDuringDayShowsReason(t *testing.T) {
+	shell := newShellForActionPanelTest(t, model.PlayerState{
+		ID:            "p1",
+		Name:          "Buyer",
+		Alive:         true,
+		Faction:       model.FactionPrisoner,
+		Role:          model.RoleGangMember,
+		CurrentRoomID: gamemap.RoomCourtyard,
+	}, nil)
+	setMarketStateForPanelTest(t, shell, model.PhaseDay, gamemap.RoomCourtyard)
+
+	shell.inputSnapshotProvider = func() input.InputSnapshot {
+		return input.InputSnapshot{InteractPressed: true}
+	}
+
+	_ = shell.Update()
+	commands := shell.DrainOutgoingCommands()
+	if _, found := findCommandByType(commands, model.CmdInteract); found {
+		t.Fatalf("expected blocked market interact to suppress server interact command, got %+v", commands)
+	}
+	if _, found := findCommandByType(commands, model.CmdBlackMarketBuy); found {
+		t.Fatalf("expected blocked market interact not to dispatch market command, got %+v", commands)
+	}
+	if shell.panelMode != actionPanelNone {
+		t.Fatalf("expected blocked market interact not to open modal, got mode %d", shell.panelMode)
+	}
+	if !strings.Contains(strings.ToLower(shell.panelLocalHint), "night") {
+		t.Fatalf("expected blocked market reason to mention night, got %q", shell.panelLocalHint)
+	}
+}
+
+func TestShellActionPanelEscapeUsesArrowSelection(t *testing.T) {
+	shell := newShellForActionPanelTest(t, model.PlayerState{
+		ID:            "p1",
+		Name:          "Escaper",
+		Alive:         true,
+		Faction:       model.FactionPrisoner,
+		Role:          model.RoleGangMember,
+		CurrentRoomID: gamemap.RoomCorridorMain,
+		Inventory: []model.ItemStack{
+			{Item: model.ItemBadge, Quantity: 1},
+		},
+	}, nil)
+
+	frame := 0
+	shell.inputSnapshotProvider = func() input.InputSnapshot {
+		frame++
+		switch frame {
+		case 1:
+			return input.InputSnapshot{PanelEscapePressed: true}
+		case 3:
+			return input.InputSnapshot{PanelNextPressed: true}
+		case 5:
+			return input.InputSnapshot{PanelUsePressed: true}
+		default:
+			return input.InputSnapshot{}
+		}
+	}
+
+	_ = shell.Update()
+	_ = shell.DrainOutgoingCommands()
+	_ = shell.Update()
+	_ = shell.DrainOutgoingCommands()
+	_ = shell.Update()
+	_ = shell.DrainOutgoingCommands()
+	_ = shell.Update()
+	_ = shell.DrainOutgoingCommands()
+	_ = shell.Update()
+	commands := shell.DrainOutgoingCommands()
+
+	interactCmd, found := findCommandByType(commands, model.CmdInteract)
+	if !found {
+		t.Fatalf("expected escape interact command after selecting next route, got %+v", commands)
+	}
+	var payload model.InteractPayload
+	if err := json.Unmarshal(interactCmd.Payload, &payload); err != nil {
+		t.Fatalf("decode interact payload: %v", err)
+	}
+	if payload.EscapeRoute != model.EscapeRouteBadgeEscape {
+		t.Fatalf("expected second route badge_escape after arrow selection, got %+v", payload)
+	}
+}
+
+func TestShellActionPanelMarketModalSuppressesMovementCommands(t *testing.T) {
+	shell := newShellForActionPanelTest(t, model.PlayerState{
+		ID:            "p1",
+		Name:          "Buyer",
+		Alive:         true,
+		Faction:       model.FactionPrisoner,
+		Role:          model.RoleGangMember,
+		CurrentRoomID: gamemap.RoomCourtyard,
+		Cards: []model.CardType{
+			model.CardMoney,
+			model.CardMoney,
+		},
+	}, nil)
+	setMarketStateForPanelTest(t, shell, model.PhaseNight, gamemap.RoomCourtyard)
+
+	frame := 0
+	shell.inputSnapshotProvider = func() input.InputSnapshot {
+		frame++
+		switch frame {
+		case 1:
+			return input.InputSnapshot{InteractPressed: true}
+		case 3:
+			return input.InputSnapshot{MoveRight: true, PanelNextPressed: true}
+		default:
+			return input.InputSnapshot{}
+		}
+	}
+
+	_ = shell.Update()
+	_ = shell.DrainOutgoingCommands()
+	_ = shell.Update()
+	_ = shell.DrainOutgoingCommands()
+	_ = shell.Update()
+	commands := shell.DrainOutgoingCommands()
+
+	if _, found := findCommandByType(commands, model.CmdMoveIntent); found {
+		t.Fatalf("expected centered modal navigation to suppress movement command, got %+v", commands)
 	}
 }
 
@@ -408,6 +618,127 @@ func TestShellActionPanelMoneyCardTargetsNearestLocalNPCPrisoner(t *testing.T) {
 	}
 	if payload.TargetEntityID != 42 {
 		t.Fatalf("expected nearest in-room npc prisoner entity id 42, got %+v", payload)
+	}
+}
+
+func TestActionPanelAvailabilityHidesMarketAndEscapeForAuthority(t *testing.T) {
+	availability := computeActionPanelAvailability(model.PlayerState{
+		ID:      "auth-1",
+		Alive:   true,
+		Faction: model.FactionAuthority,
+		Role:    model.RoleDeputy,
+	})
+	if availability.market {
+		t.Fatalf("expected market panel hidden for authority roles")
+	}
+	if availability.escape {
+		t.Fatalf("expected escape panel hidden for authority roles")
+	}
+}
+
+func TestActionPanelAvailabilityShowsMarketAndEscapeForPrisoners(t *testing.T) {
+	availability := computeActionPanelAvailability(model.PlayerState{
+		ID:      "pris-1",
+		Alive:   true,
+		Faction: model.FactionPrisoner,
+		Role:    model.RoleGangMember,
+	})
+	if !availability.market {
+		t.Fatalf("expected market panel visible for prisoner roles")
+	}
+	if !availability.escape {
+		t.Fatalf("expected escape panel visible for prisoner roles")
+	}
+}
+
+func TestShellActionPanelIgnoresMarketToggleForAuthority(t *testing.T) {
+	shell := newShellForActionPanelTest(t, model.PlayerState{
+		ID:            "auth-1",
+		Name:          "Authority",
+		Alive:         true,
+		Faction:       model.FactionAuthority,
+		Role:          model.RoleDeputy,
+		CurrentRoomID: gamemap.RoomCorridorMain,
+		Cards:         []model.CardType{model.CardMoney, model.CardMoney},
+	}, nil)
+	setMarketStateForPanelTest(t, shell, model.PhaseNight, gamemap.RoomCorridorMain)
+
+	frame := 0
+	shell.inputSnapshotProvider = func() input.InputSnapshot {
+		frame++
+		switch frame {
+		case 1:
+			return input.InputSnapshot{PanelMarketPressed: true}
+		case 3:
+			return input.InputSnapshot{PanelUsePressed: true}
+		default:
+			return input.InputSnapshot{}
+		}
+	}
+
+	_ = shell.Update()
+	_ = shell.DrainOutgoingCommands()
+	_ = shell.Update()
+	_ = shell.DrainOutgoingCommands()
+	_ = shell.Update()
+	commands := shell.DrainOutgoingCommands()
+
+	if _, found := findCommandByType(commands, model.CmdBlackMarketBuy); found {
+		t.Fatalf("expected authority panel flow to block market command dispatch, got %+v", commands)
+	}
+}
+
+func TestTargetDoorForPanelReturnsZeroWhenAdjacentDoorIsAccessDenied(t *testing.T) {
+	local := model.PlayerState{
+		ID:            "deputy",
+		Role:          model.RoleDeputy,
+		Faction:       model.FactionAuthority,
+		CurrentRoomID: gamemap.RoomCorridorMain,
+	}
+	mapState := model.MapState{
+		PowerOn: true,
+		Doors: []model.DoorState{
+			{
+				ID:    1,
+				RoomA: gamemap.RoomWardenHQ,
+				RoomB: gamemap.RoomCorridorMain,
+				Open:  true,
+			},
+		},
+	}
+
+	if doorID := targetDoorForPanel(local, mapState); doorID != 0 {
+		t.Fatalf("expected no eligible target door, got %d", doorID)
+	}
+}
+
+func TestTargetDoorForPanelPrefersFirstEligibleDoor(t *testing.T) {
+	local := model.PlayerState{
+		ID:            "prisoner",
+		Role:          model.RoleGangMember,
+		Faction:       model.FactionPrisoner,
+		CurrentRoomID: gamemap.RoomCorridorMain,
+	}
+	mapState := model.MapState{
+		PowerOn: true,
+		Doors: []model.DoorState{
+			{
+				ID:    1,
+				RoomA: gamemap.RoomWardenHQ,
+				RoomB: gamemap.RoomCorridorMain,
+				Open:  true,
+			},
+			{
+				ID:    8,
+				RoomA: gamemap.RoomCourtyard,
+				RoomB: gamemap.RoomCorridorMain,
+				Open:  true,
+			},
+		},
+	}
+
+	if doorID := targetDoorForPanel(local, mapState); doorID != 8 {
+		t.Fatalf("expected first accessible door id 8, got %d", doorID)
 	}
 }
 

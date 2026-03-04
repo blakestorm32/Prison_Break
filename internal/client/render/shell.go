@@ -70,6 +70,10 @@ type Shell struct {
 	panelMarketIdx          int
 	panelEscapeIdx          int
 	panelInputPrev          panelInputEdgeState
+	panelSuppressGameplay   bool
+	panelSuppressInteract   bool
+	panelLocalHint          string
+	panelLocalHintWarning   bool
 	spectatorInputPrev      spectatorInputEdgeState
 	spectatorFollowPlayerID model.PlayerID
 	spectatorFollowSlot     int
@@ -217,8 +221,11 @@ func (s *Shell) Update() error {
 		localPtr = &localCopy
 	}
 
-	commands := s.inputController.BuildCommands(snapshot, state.TickID+1, localPtr)
+	s.panelSuppressGameplay = false
+	s.panelSuppressInteract = false
 	panelCommands := s.updateActionPanelCommands(snapshot, state, localPtr)
+	gameplaySnapshot := s.filterSnapshotForActionPanels(snapshot)
+	commands := s.inputController.BuildCommands(gameplaySnapshot, state.TickID+1, localPtr)
 	if len(panelCommands) > 0 {
 		commands = append(commands, panelCommands...)
 	}
@@ -789,6 +796,24 @@ func (s *Shell) drawLatestActionFeedback(screen *ebiten.Image, state model.GameS
 	if s == nil || s.localPlayerID == "" {
 		return
 	}
+
+	lineY := 74
+	if strings.TrimSpace(s.panelLocalHint) != "" {
+		hintColor := color.RGBA{R: 208, G: 219, B: 232, A: 242}
+		if s.panelLocalHintWarning {
+			hintColor = color.RGBA{R: 244, G: 189, B: 133, A: 242}
+		}
+		text.Draw(
+			screen,
+			"Hint: "+s.panelLocalHint,
+			basicfont.Face7x13,
+			16,
+			lineY,
+			hintColor,
+		)
+		lineY += 16
+	}
+
 	local, found := playerByID(state.Players, s.localPlayerID)
 	if !found || local.LastActionFeedback.Kind == "" || local.LastActionFeedback.TickID == 0 {
 		return
@@ -803,7 +828,7 @@ func (s *Shell) drawLatestActionFeedback(screen *ebiten.Image, state model.GameS
 		"Event: "+message,
 		basicfont.Face7x13,
 		16,
-		74,
+		lineY,
 		color.RGBA{R: 226, G: 234, B: 243, A: 242},
 	)
 }
@@ -956,6 +981,31 @@ func (s *Shell) IsPauseMenuOpen() bool {
 	return s.pauseMenuOpen
 }
 
+func (s *Shell) filterSnapshotForActionPanels(snapshot input.InputSnapshot) input.InputSnapshot {
+	if s == nil {
+		return snapshot
+	}
+
+	if s.panelSuppressInteract {
+		snapshot.InteractPressed = false
+	}
+
+	if s.panelSuppressGameplay || s.panelMode == actionPanelMarket || s.panelMode == actionPanelEscape {
+		snapshot.MoveUp = false
+		snapshot.MoveDown = false
+		snapshot.MoveLeft = false
+		snapshot.MoveRight = false
+		snapshot.Sprint = false
+		snapshot.InteractPressed = false
+		snapshot.AbilityPressed = false
+		snapshot.ReloadPressed = false
+		snapshot.FirePressed = false
+		snapshot.Touches = nil
+	}
+
+	return snapshot
+}
+
 func (s *Shell) drawPauseMenu(screen *ebiten.Image) {
 	lines := []string{
 		"Pause Menu",
@@ -964,7 +1014,8 @@ func (s *Shell) drawPauseMenu(screen *ebiten.Image) {
 		"Move: WASD/Arrows | Sprint: Shift",
 		"Aim/Fire: Mouse + Space/LMB",
 		"Interact: E/F | Ability: V | Ability Info: I | Reload: R",
-		"Panels: Tab/C/B/X + [ ] + Enter",
+		"Panels: Tab/C | Escape: X | Market: Interact in market room at night",
+		"Modal select: Arrow keys + Enter (Esc/X close)",
 		"",
 		"Esc or P: Resume",
 		"Q: Exit match to menu",
@@ -1097,6 +1148,13 @@ func entityFillColor(kind model.EntityKind) color.Color {
 func (s *Shell) captureInputSnapshot() input.InputSnapshot {
 	mouseX, mouseY := ebiten.CursorPosition()
 	aimWorldX, aimWorldY := s.camera.ScreenToWorld(mouseX, mouseY)
+	modalOpen := s.panelMode == actionPanelMarket || s.panelMode == actionPanelEscape
+	panelPrevPressed := ebiten.IsKeyPressed(ebiten.KeyBracketLeft) || ebiten.IsKeyPressed(ebiten.KeyPageUp)
+	panelNextPressed := ebiten.IsKeyPressed(ebiten.KeyBracketRight) || ebiten.IsKeyPressed(ebiten.KeyPageDown)
+	if modalOpen {
+		panelPrevPressed = panelPrevPressed || ebiten.IsKeyPressed(ebiten.KeyArrowUp) || ebiten.IsKeyPressed(ebiten.KeyArrowLeft)
+		panelNextPressed = panelNextPressed || ebiten.IsKeyPressed(ebiten.KeyArrowDown) || ebiten.IsKeyPressed(ebiten.KeyArrowRight)
+	}
 
 	touchIDs := ebiten.AppendTouchIDs(nil)
 	sort.Slice(touchIDs, func(i int, j int) bool {
@@ -1134,8 +1192,8 @@ func (s *Shell) captureInputSnapshot() input.InputSnapshot {
 		PanelAbilitiesPressed: false,
 		PanelMarketPressed:    ebiten.IsKeyPressed(ebiten.KeyB) || ebiten.IsKeyPressed(ebiten.KeyM),
 		PanelEscapePressed:    ebiten.IsKeyPressed(ebiten.KeyX),
-		PanelPrevPressed:      ebiten.IsKeyPressed(ebiten.KeyBracketLeft) || ebiten.IsKeyPressed(ebiten.KeyPageUp),
-		PanelNextPressed:      ebiten.IsKeyPressed(ebiten.KeyBracketRight) || ebiten.IsKeyPressed(ebiten.KeyPageDown),
+		PanelPrevPressed:      panelPrevPressed,
+		PanelNextPressed:      panelNextPressed,
 		PanelUsePressed:       ebiten.IsKeyPressed(ebiten.KeyEnter) || ebiten.IsKeyPressed(ebiten.KeyKPEnter),
 		SpectatorPrevPressed:  ebiten.IsKeyPressed(ebiten.KeyQ) || ebiten.IsKeyPressed(ebiten.KeyArrowLeft),
 		SpectatorNextPressed:  ebiten.IsKeyPressed(ebiten.KeyE) || ebiten.IsKeyPressed(ebiten.KeyArrowRight),

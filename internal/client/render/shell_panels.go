@@ -3,6 +3,7 @@ package render
 import (
 	"fmt"
 	"image/color"
+	"strings"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/text"
@@ -34,6 +35,7 @@ type panelInputEdgeState struct {
 	abilities bool
 	market    bool
 	escape    bool
+	interact  bool
 	prev      bool
 	next      bool
 	use       bool
@@ -112,12 +114,19 @@ func (s *Shell) updateActionPanelCommands(
 		return nil
 	}
 
+	interactPressed := snapshot.InteractPressed
+	mobileLayout := s.inputController.MobileLayout()
+	if mobileLayout.Enabled && touchInsideRect(snapshot.Touches, mobileLayout.InteractButton) {
+		interactPressed = true
+	}
+
 	current := panelInputEdgeState{
 		inventory: snapshot.PanelInventoryPressed,
 		cards:     snapshot.PanelCardsPressed,
 		abilities: snapshot.PanelAbilitiesPressed,
 		market:    snapshot.PanelMarketPressed,
 		escape:    snapshot.PanelEscapePressed,
+		interact:  interactPressed,
 		prev:      snapshot.PanelPrevPressed,
 		next:      snapshot.PanelNextPressed,
 		use:       snapshot.PanelUsePressed,
@@ -130,12 +139,15 @@ func (s *Shell) updateActionPanelCommands(
 	abilitiesEdge := current.abilities && !previous.abilities
 	marketEdge := current.market && !previous.market
 	escapeEdge := current.escape && !previous.escape
+	interactEdge := current.interact && !previous.interact
 	prevEdge := current.prev && !previous.prev
 	nextEdge := current.next && !previous.next
 	useEdge := current.use && !previous.use
 
 	if localPlayer == nil {
 		s.panelMode = actionPanelNone
+		s.panelLocalHint = ""
+		s.panelLocalHintWarning = false
 		return nil
 	}
 
@@ -143,18 +155,42 @@ func (s *Shell) updateActionPanelCommands(
 
 	if inventoryEdge && availability.inventory {
 		s.toggleActionPanel(actionPanelInventory)
+		s.panelLocalHint = ""
+		s.panelLocalHintWarning = false
 	}
 	if cardsEdge && availability.cards {
 		s.toggleActionPanel(actionPanelCards)
+		s.panelLocalHint = ""
+		s.panelLocalHintWarning = false
 	}
 	if abilitiesEdge && availability.abilities {
 		s.toggleActionPanel(actionPanelAbilities)
+		s.panelLocalHint = ""
+		s.panelLocalHintWarning = false
 	}
-	if marketEdge && availability.market {
-		s.toggleActionPanel(actionPanelMarket)
+	if marketEdge {
+		s.panelLocalHint = marketAccessInstruction(state.Map.BlackMarketRoomID)
+		s.panelLocalHintWarning = true
 	}
-	if escapeEdge && availability.escape {
-		s.toggleActionPanel(actionPanelEscape)
+	if escapeEdge {
+		if s.panelMode == actionPanelMarket {
+			s.panelMode = actionPanelNone
+		} else if availability.escape {
+			s.toggleActionPanel(actionPanelEscape)
+			s.panelLocalHint = ""
+			s.panelLocalHintWarning = false
+		}
+	}
+	if interactEdge && shouldHandleMarketInteract(*localPlayer, state) {
+		s.panelSuppressInteract = true
+		if canOpen, reason := canOpenMarketPanel(*localPlayer, state); canOpen {
+			s.panelMode = actionPanelMarket
+			s.panelLocalHint = ""
+			s.panelLocalHintWarning = false
+		} else {
+			s.panelLocalHint = reason
+			s.panelLocalHintWarning = true
+		}
 	}
 
 	if !isPanelModeAvailable(s.panelMode, availability) {
@@ -163,6 +199,9 @@ func (s *Shell) updateActionPanelCommands(
 	}
 	if s.panelMode == actionPanelNone {
 		return nil
+	}
+	if actionPanelUsesCenteredModal(s.panelMode) {
+		s.panelSuppressGameplay = true
 	}
 
 	targetTick := state.TickID + 1
@@ -259,15 +298,21 @@ func (s *Shell) updateActionPanelCommands(
 		}
 
 		offer := entries[s.panelMarketIdx]
-		if canBuy, _ := marketOfferUsability(*localPlayer, state, offer); !canBuy {
+		if canBuy, reason := marketOfferUsability(*localPlayer, state, offer); !canBuy {
+			s.panelLocalHint = reason
+			s.panelLocalHintWarning = true
 			return nil
 		}
 		command, ok := s.inputController.BuildBlackMarketBuyCommand(model.BlackMarketPurchasePayload{
 			Item: offer.Item,
 		}, targetTick)
 		if !ok {
+			s.panelLocalHint = "Unable to build market purchase command."
+			s.panelLocalHintWarning = true
 			return nil
 		}
+		s.panelLocalHint = ""
+		s.panelLocalHintWarning = false
 		return []model.InputCommand{command}
 
 	case actionPanelEscape:
@@ -286,12 +331,26 @@ func (s *Shell) updateActionPanelCommands(
 		if !useEdge {
 			return nil
 		}
-		command, ok := s.inputController.BuildInteractCommand(model.InteractPayload{
-			EscapeRoute: entries[s.panelEscapeIdx].Route,
-		}, targetTick)
-		if !ok {
+		selected := entries[s.panelEscapeIdx]
+		if !selected.CanAttempt {
+			reason := selected.FailureReason
+			if reason == "" {
+				reason = fmt.Sprintf("%s is not ready yet.", selected.RouteLabel)
+			}
+			s.panelLocalHint = reason
+			s.panelLocalHintWarning = true
 			return nil
 		}
+		command, ok := s.inputController.BuildInteractCommand(model.InteractPayload{
+			EscapeRoute: selected.Route,
+		}, targetTick)
+		if !ok {
+			s.panelLocalHint = "Unable to build escape command."
+			s.panelLocalHintWarning = true
+			return nil
+		}
+		s.panelLocalHint = ""
+		s.panelLocalHintWarning = false
 		return []model.InputCommand{command}
 	}
 
@@ -304,6 +363,46 @@ func (s *Shell) toggleActionPanel(next actionPanelMode) {
 		return
 	}
 	s.panelMode = next
+}
+
+func actionPanelUsesCenteredModal(mode actionPanelMode) bool {
+	return mode == actionPanelMarket || mode == actionPanelEscape
+}
+
+func shouldHandleMarketInteract(local model.PlayerState, state model.GameState) bool {
+	if !gamemap.IsPrisonerPlayer(local) {
+		return false
+	}
+	if state.Map.BlackMarketRoomID == "" {
+		return false
+	}
+	return local.CurrentRoomID != "" && local.CurrentRoomID == state.Map.BlackMarketRoomID
+}
+
+func canOpenMarketPanel(local model.PlayerState, state model.GameState) (bool, string) {
+	if !local.Alive {
+		return false, "You are down."
+	}
+	if !gamemap.IsPrisonerPlayer(local) {
+		return false, "Only prisoners can access the black market."
+	}
+	if state.Map.BlackMarketRoomID == "" {
+		return false, "Black-market location is not set this cycle."
+	}
+	if local.CurrentRoomID != state.Map.BlackMarketRoomID {
+		return false, fmt.Sprintf("Go to %s and press Interact (E/F).", roomDisplayLabel(state.Map.BlackMarketRoomID))
+	}
+	if state.Phase.Current != model.PhaseNight {
+		return false, "Black market opens at night."
+	}
+	return true, ""
+}
+
+func marketAccessInstruction(marketRoomID model.RoomID) string {
+	if marketRoomID == "" {
+		return "Black-market location is not set."
+	}
+	return fmt.Sprintf("Go to %s at night and press Interact (E/F) to buy.", roomDisplayLabel(marketRoomID))
 }
 
 func computeActionPanelAvailability(local model.PlayerState) actionPanelAvailability {
@@ -687,11 +786,12 @@ func (s *Shell) drawActionPanels(screen *ebiten.Image, state model.GameState) {
 	if availability.abilities {
 		s.drawActionPanelTab(screen, layout.abilitiesTab, "Abilities", "Click", s.panelMode == actionPanelAbilities)
 	}
-	if availability.market {
-		s.drawActionPanelTab(screen, layout.marketTab, "Market", "B", s.panelMode == actionPanelMarket)
-	}
 	if availability.escape {
 		s.drawActionPanelTab(screen, layout.escapeTab, "Escape", "X", s.panelMode == actionPanelEscape)
+	}
+	if availability.market {
+		instruction := marketAccessInstruction(state.Map.BlackMarketRoomID)
+		text.Draw(screen, instruction, basicfont.Face7x13, int(layout.inventoryTab.MinX), int(layout.inventoryTab.MaxY)+18, color.RGBA{R: 180, G: 195, B: 210, A: 255})
 	}
 
 	if !isPanelModeAvailable(s.panelMode, availability) {
@@ -701,10 +801,14 @@ func (s *Shell) drawActionPanels(screen *ebiten.Image, state model.GameState) {
 	if s.panelMode == actionPanelNone {
 		return
 	}
+	if actionPanelUsesCenteredModal(s.panelMode) {
+		s.drawCenteredActionPanelModal(screen, state, local)
+		return
+	}
 
 	panelX := float32(layout.inventoryTab.MinX)
 	panelY := float32(layout.inventoryTab.MaxY + 10)
-	panelWidth := float32(layout.escapeTab.MaxX - layout.inventoryTab.MinX)
+	panelWidth := float32(layout.abilitiesTab.MaxX - layout.inventoryTab.MinX)
 	panelHeight := float32(layout.useButton.MaxY - layout.inventoryTab.MaxY - 2)
 
 	vector.DrawFilledRect(screen, panelX, panelY, panelWidth, panelHeight, color.RGBA{R: 8, G: 12, B: 18, A: 224}, false)
@@ -738,34 +842,6 @@ func (s *Shell) drawActionPanels(screen *ebiten.Image, state model.GameState) {
 		}
 	}
 
-	if s.panelMode == actionPanelMarket {
-		offers := marketPanelEntries()
-		if len(offers) > 0 {
-			selectedOffer := offers[clampPanelIndex(s.panelMarketIdx, len(offers))]
-			moneyCards := countCards(local.Cards, model.CardMoney)
-			canBuy, reason := marketOfferUsability(local, state, selectedOffer)
-			statusColor := color.RGBA{R: 197, G: 209, B: 223, A: 255}
-			if !canBuy {
-				statusColor = color.RGBA{R: 242, G: 185, B: 131, A: 255}
-			}
-			detail := fmt.Sprintf("Money %d | Cost %d | %s", moneyCards, selectedOffer.MoneyCardCost, reason)
-			text.Draw(screen, detail, basicfont.Face7x13, int(panelX)+10, int(layout.prevButton.MinY)-24, statusColor)
-		}
-	}
-	if s.panelMode == actionPanelEscape {
-		evaluations := escapePanelEntries(local, state.Map)
-		if len(evaluations) > 0 {
-			selectedEval := evaluations[clampPanelIndex(s.panelEscapeIdx, len(evaluations))]
-			detailColor := color.RGBA{R: 197, G: 209, B: 223, A: 255}
-			summary := "READY"
-			if !selectedEval.CanAttempt {
-				summary = selectedEval.FailureReason
-				detailColor = color.RGBA{R: 242, G: 185, B: 131, A: 255}
-			}
-			text.Draw(screen, summary, basicfont.Face7x13, int(panelX)+10, int(layout.prevButton.MinY)-38, detailColor)
-			text.Draw(screen, fmt.Sprintf("Last: %s", formatEscapeAttemptFeedback(local.LastEscapeAttempt)), basicfont.Face7x13, int(panelX)+10, int(layout.prevButton.MinY)-24, color.RGBA{R: 188, G: 202, B: 218, A: 255})
-		}
-	}
 	if local.LastActionFeedback.Kind != "" && local.LastActionFeedback.TickID > 0 {
 		text.Draw(
 			screen,
@@ -814,6 +890,140 @@ func (s *Shell) drawActionPanelButton(screen *ebiten.Image, rect input.Rect, lab
 	text.Draw(screen, label, basicfont.Face7x13, labelX, labelY, color.RGBA{R: 236, G: 244, B: 251, A: 255})
 }
 
+func (s *Shell) drawCenteredActionPanelModal(screen *ebiten.Image, state model.GameState, local model.PlayerState) {
+	if s == nil {
+		return
+	}
+
+	type modalLine struct {
+		text      string
+		color     color.RGBA
+		highlight bool
+	}
+
+	lines := make([]modalLine, 0, 24)
+	lines = append(lines,
+		modalLine{text: actionPanelTitle(s.panelMode), color: color.RGBA{R: 244, G: 249, B: 255, A: 255}},
+		modalLine{text: "Arrows: select | Enter: confirm | X: close", color: color.RGBA{R: 181, G: 199, B: 217, A: 255}},
+		modalLine{text: "", color: color.RGBA{R: 194, G: 205, B: 218, A: 255}},
+	)
+
+	detailColor := color.RGBA{R: 197, G: 209, B: 223, A: 255}
+	detailLines := make([]string, 0, 8)
+	switch s.panelMode {
+	case actionPanelMarket:
+		offers := marketPanelEntries()
+		if len(offers) == 0 {
+			detailLines = append(detailLines, "No market offers available.")
+			break
+		}
+		s.panelMarketIdx = clampPanelIndex(s.panelMarketIdx, len(offers))
+		for index, offer := range offers {
+			canBuy, _ := marketOfferUsability(local, state, offer)
+			status := "LOCKED"
+			if canBuy {
+				status = "READY"
+			}
+			lines = append(lines, modalLine{
+				text:      fmt.Sprintf("%d. %s x%d  M%d  %s", index+1, offer.Item, offer.Quantity, offer.MoneyCardCost, status),
+				color:     color.RGBA{R: 214, G: 224, B: 236, A: 255},
+				highlight: index == s.panelMarketIdx,
+			})
+		}
+
+		selectedOffer := offers[s.panelMarketIdx]
+		moneyCards := countCards(local.Cards, model.CardMoney)
+		canBuy, reason := marketOfferUsability(local, state, selectedOffer)
+		detailLines = append(detailLines, fmt.Sprintf("Money cards: %d | Cost: %d", moneyCards, selectedOffer.MoneyCardCost))
+		detailLines = append(detailLines, reason)
+		if !canBuy {
+			detailColor = color.RGBA{R: 242, G: 185, B: 131, A: 255}
+		}
+
+	case actionPanelEscape:
+		evaluations := escapePanelEntries(local, state.Map)
+		if len(evaluations) == 0 {
+			detailLines = append(detailLines, "No escape routes available.")
+			break
+		}
+		s.panelEscapeIdx = clampPanelIndex(s.panelEscapeIdx, len(evaluations))
+		for index, entry := range evaluations {
+			stateText := "BLOCKED"
+			if entry.CanAttempt {
+				stateText = "READY"
+			}
+			lines = append(lines, modalLine{
+				text:      fmt.Sprintf("%d. %s  %s", index+1, entry.RouteLabel, stateText),
+				color:     color.RGBA{R: 214, G: 224, B: 236, A: 255},
+				highlight: index == s.panelEscapeIdx,
+			})
+		}
+
+		selected := evaluations[s.panelEscapeIdx]
+		if selected.CanAttempt {
+			detailLines = append(detailLines, fmt.Sprintf("%s is ready. Press Enter to attempt.", selected.RouteLabel))
+		} else {
+			detailColor = color.RGBA{R: 242, G: 185, B: 131, A: 255}
+			if selected.FailureReason != "" {
+				detailLines = append(detailLines, selected.FailureReason)
+			}
+		}
+		for _, requirement := range selected.Requirements {
+			prefix := "[ ]"
+			if requirement.Met {
+				prefix = "[x]"
+			}
+			detailLines = append(detailLines, fmt.Sprintf("%s %s", prefix, requirement.Label))
+		}
+		detailLines = append(detailLines, "Last: "+formatEscapeAttemptFeedback(local.LastEscapeAttempt))
+	}
+
+	lines = append(lines, modalLine{text: "", color: color.RGBA{R: 194, G: 205, B: 218, A: 255}})
+	for _, detail := range detailLines {
+		lines = append(lines, modalLine{text: detail, color: detailColor})
+	}
+	if strings.TrimSpace(s.panelLocalHint) != "" {
+		lines = append(lines, modalLine{text: "", color: color.RGBA{R: 194, G: 205, B: 218, A: 255}})
+		hintColor := color.RGBA{R: 208, G: 219, B: 232, A: 255}
+		if s.panelLocalHintWarning {
+			hintColor = color.RGBA{R: 242, G: 185, B: 131, A: 255}
+		}
+		lines = append(lines, modalLine{text: "Hint: " + s.panelLocalHint, color: hintColor})
+	}
+
+	maxLines := len(lines)
+	if maxLines > 20 {
+		maxLines = 20
+		lines = lines[:maxLines]
+	}
+
+	panelText := make([]string, 0, len(lines))
+	for _, line := range lines {
+		panelText = append(panelText, line.text)
+	}
+
+	panelWidth := clampFloat32(estimatePanelWidth(panelText), 460, float32(s.screenWidth)-36)
+	panelHeight := float32(28 + (len(lines) * 16))
+	maxHeight := float32(s.screenHeight) - 28
+	if panelHeight > maxHeight {
+		panelHeight = maxHeight
+	}
+	panelX := (float32(s.screenWidth) - panelWidth) / 2
+	panelY := (float32(s.screenHeight) - panelHeight) / 2
+
+	vector.DrawFilledRect(screen, panelX, panelY, panelWidth, panelHeight, color.RGBA{R: 7, G: 13, B: 19, A: 236}, false)
+	vector.StrokeRect(screen, panelX, panelY, panelWidth, panelHeight, 2, color.RGBA{R: 99, G: 124, B: 147, A: 255}, false)
+
+	lineY := int(panelY) + 22
+	for _, line := range lines {
+		if line.highlight {
+			vector.DrawFilledRect(screen, panelX+10, float32(lineY-11), panelWidth-20, 15, color.RGBA{R: 35, G: 61, B: 86, A: 214}, false)
+		}
+		text.Draw(screen, line.text, basicfont.Face7x13, int(panelX)+14, lineY, line.color)
+		lineY += 16
+	}
+}
+
 func actionPanelTitle(mode actionPanelMode) string {
 	switch mode {
 	case actionPanelInventory:
@@ -823,9 +1033,9 @@ func actionPanelTitle(mode actionPanelMode) string {
 	case actionPanelAbilities:
 		return "Abilities (activate selected ability)"
 	case actionPanelMarket:
-		return "Black Market (buy items with money cards)"
+		return "Black Market"
 	case actionPanelEscape:
-		return "Escape Routes (attempt selected route)"
+		return "Escape Routes"
 	default:
 		return "Action Panel"
 	}
