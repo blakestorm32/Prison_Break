@@ -1,6 +1,7 @@
 package render
 
 import (
+	"fmt"
 	"image/color"
 	"sort"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"prison-break/internal/client/input"
 	"prison-break/internal/client/netclient"
 	"prison-break/internal/client/prediction"
+	"prison-break/internal/gamecore/abilities"
 	"prison-break/internal/gamecore/combat"
 	"prison-break/internal/gamecore/escape"
 	gamemap "prison-break/internal/gamecore/map"
@@ -73,6 +75,8 @@ type Shell struct {
 	spectatorFollowSlot     int
 	spectatorSlotCount      int
 	pauseMenuOpen           bool
+	abilityInfoOpen         bool
+	abilityInfoPrevPressed  bool
 }
 
 type spectatorInputEdgeState struct {
@@ -101,8 +105,8 @@ func NewShell(config ShellConfig) *Shell {
 	}
 
 	camera := NewCamera(screenWidth, screenHeight)
-	camera.TilePixels = 28
-	camera.Zoom = 1.15
+	camera.TilePixels = 40
+	camera.Zoom = 1.00
 
 	inputController := config.InputController
 	if inputController == nil {
@@ -186,6 +190,10 @@ func (s *Shell) Update() error {
 	if s.inputSnapshotProvider != nil {
 		snapshot = s.inputSnapshotProvider()
 	}
+	if snapshot.AbilityInfoPressed && !s.abilityInfoPrevPressed {
+		s.abilityInfoOpen = !s.abilityInfoOpen
+	}
+	s.abilityInfoPrevPressed = snapshot.AbilityInfoPressed
 
 	if s.localPlayerID == "" {
 		s.updateSpectatorFollowSelection(state, snapshot)
@@ -264,6 +272,7 @@ func (s *Shell) Draw(screen *ebiten.Image) {
 	s.drawHUD(screen, state)
 	s.drawSpectatorOverlay(screen, state)
 	s.drawActionPanels(screen, state)
+	s.drawAbilityInfoPanel(screen, state)
 	if s.pauseMenuOpen {
 		s.drawPauseMenu(screen)
 	}
@@ -318,7 +327,16 @@ func (s *Shell) Layout(_, _ int) (int, int) {
 }
 
 func (s *Shell) drawRooms(screen *ebiten.Image, state model.GameState) {
+	_, hasLocal, localRoomID, limitToLocalRoom := resolveLocalVisionScope(state, s.localPlayerID)
+	if !hasLocal {
+		limitToLocalRoom = false
+	}
+
 	for _, room := range s.layout.Rooms() {
+		if limitToLocalRoom && room.ID != localRoomID {
+			continue
+		}
+
 		widthTiles := float64((room.Max.X - room.Min.X) + 1)
 		heightTiles := float64((room.Max.Y - room.Min.Y) + 1)
 		x, y, w, h := s.camera.TileRectToScreen(float64(room.Min.X), float64(room.Min.Y), widthTiles, heightTiles)
@@ -337,28 +355,70 @@ func (s *Shell) drawRooms(screen *ebiten.Image, state model.GameState) {
 }
 
 func (s *Shell) drawDoors(screen *ebiten.Image, state model.GameState) {
+	localPlayer, hasLocal, localRoomID, limitToLocalRoom := resolveLocalVisionScope(state, s.localPlayerID)
+
 	doorByID := make(map[model.DoorID]model.DoorState, len(state.Map.Doors))
 	for _, door := range state.Map.Doors {
 		doorByID[door.ID] = door
 	}
 
 	for _, doorLink := range s.layout.DoorLinks() {
+		if limitToLocalRoom && doorLink.RoomA != localRoomID && doorLink.RoomB != localRoomID {
+			continue
+		}
+
 		doorState, exists := doorByID[doorLink.ID]
-		open := !exists || doorState.Open
+		if !exists {
+			doorState = model.DoorState{
+				ID:    doorLink.ID,
+				RoomA: doorLink.RoomA,
+				RoomB: doorLink.RoomB,
+				Open:  true,
+			}
+		}
+		open := doorState.Open
+		if hasLocal {
+			open = projectDoorOpenForViewer(open, doorState, localPlayer, state.Map)
+		}
 
 		center := model.Vector2{X: float32(doorLink.Position.X) + 0.5, Y: float32(doorLink.Position.Y) + 0.5}
-		x, y, w, h := s.camera.TileRectToScreen(float64(center.X)-0.18, float64(center.Y)-0.18, 0.36, 0.36)
+		x, y, w, h := s.camera.TileRectToScreen(float64(center.X)-0.50, float64(center.Y)-0.50, 1.00, 1.00)
 
 		fill := color.RGBA{R: 210, G: 66, B: 66, A: 255}
 		if open {
 			fill = color.RGBA{R: 88, G: 198, B: 121, A: 255}
 		}
 		vector.DrawFilledRect(screen, float32(x), float32(y), float32(w), float32(h), fill, false)
+		vector.StrokeRect(screen, float32(x), float32(y), float32(w), float32(h), 2.5, color.RGBA{R: 232, G: 239, B: 246, A: 255}, false)
+		label := "C"
+		if open {
+			label = "O"
+		}
+		text.Draw(screen, label, basicfont.Face7x13, int(x+w/2)-3, int(y+h/2)+5, color.RGBA{R: 250, G: 252, B: 255, A: 255})
+
+		destinationLabel := doorLeadLabelForViewer(doorState, hasLocal, localRoomID)
+		if destinationLabel != "" {
+			labelX := int(x + (w / 2) - float64(len(destinationLabel)*3))
+			labelY := int(y) - 4
+			if labelY < 12 {
+				labelY = int(y + h + 12)
+			}
+			text.Draw(screen, destinationLabel, basicfont.Face7x13, labelX, labelY, color.RGBA{R: 216, G: 228, B: 241, A: 248})
+		}
 	}
 }
 
 func (s *Shell) drawPlayers(screen *ebiten.Image, state model.GameState) {
+	_, hasLocal, localRoomID, limitToLocalRoom := resolveLocalVisionScope(state, s.localPlayerID)
+	if !hasLocal {
+		limitToLocalRoom = false
+	}
+
 	for _, player := range state.Players {
+		if limitToLocalRoom && player.ID != s.localPlayerID && player.CurrentRoomID != localRoomID {
+			continue
+		}
+
 		size := 0.72
 		x, y, w, h := s.camera.TileRectToScreen(float64(player.Position.X)-(size/2), float64(player.Position.Y)-(size/2), size, size)
 
@@ -383,14 +443,130 @@ func (s *Shell) drawPlayers(screen *ebiten.Image, state model.GameState) {
 }
 
 func (s *Shell) drawEntities(screen *ebiten.Image, state model.GameState) {
+	_, hasLocal, localRoomID, limitToLocalRoom := resolveLocalVisionScope(state, s.localPlayerID)
+	if !hasLocal {
+		limitToLocalRoom = false
+	}
+
 	for _, entity := range state.Entities {
 		if !entity.Active {
+			continue
+		}
+		if limitToLocalRoom && entity.RoomID != localRoomID {
 			continue
 		}
 		size := 0.45
 		x, y, w, h := s.camera.TileRectToScreen(float64(entity.Position.X)-(size/2), float64(entity.Position.Y)-(size/2), size, size)
 		vector.DrawFilledRect(screen, float32(x), float32(y), float32(w), float32(h), entityFillColor(entity.Kind), false)
 	}
+}
+
+func resolveLocalVisionScope(
+	state model.GameState,
+	localPlayerID model.PlayerID,
+) (localPlayer model.PlayerState, hasLocalPlayer bool, localRoomID model.RoomID, limitToLocalRoom bool) {
+	if localPlayerID == "" {
+		return model.PlayerState{}, false, "", false
+	}
+
+	local, found := playerByID(state.Players, localPlayerID)
+	if !found {
+		return model.PlayerState{}, false, "", false
+	}
+
+	localRoomID = local.CurrentRoomID
+	if localRoomID == "" {
+		return local, true, "", false
+	}
+
+	return local, true, localRoomID, true
+}
+
+func projectDoorOpenForViewer(
+	isDoorOpen bool,
+	door model.DoorState,
+	viewer model.PlayerState,
+	mapState model.MapState,
+) bool {
+	if !isDoorOpen {
+		return false
+	}
+	if !canViewerTraverseDoor(viewer, door, mapState) {
+		return false
+	}
+	return true
+}
+
+func canViewerTraverseDoor(
+	viewer model.PlayerState,
+	door model.DoorState,
+	mapState model.MapState,
+) bool {
+	if door.ID == 0 {
+		return false
+	}
+
+	if viewer.CurrentRoomID != "" {
+		targetRoomID, adjacent := doorAdjacentTargetRoom(viewer.CurrentRoomID, door)
+		if !adjacent {
+			return false
+		}
+		if targetRoomID != "" && !gamemap.CanEnterRoom(viewer, targetRoomID, mapState) {
+			return false
+		}
+	} else {
+		if !gamemap.CanEnterRoom(viewer, door.RoomA, mapState) &&
+			!gamemap.CanEnterRoom(viewer, door.RoomB, mapState) {
+			return false
+		}
+	}
+
+	if cell, exists := cellStateForDoor(mapState.Cells, door.ID); exists && !gamemap.CanOperateCellDoor(viewer, cell) {
+		return false
+	}
+
+	return true
+}
+
+func doorAdjacentTargetRoom(currentRoomID model.RoomID, door model.DoorState) (model.RoomID, bool) {
+	switch currentRoomID {
+	case door.RoomA:
+		return door.RoomB, true
+	case door.RoomB:
+		return door.RoomA, true
+	default:
+		return "", false
+	}
+}
+
+func cellStateForDoor(cells []model.CellState, doorID model.DoorID) (model.CellState, bool) {
+	if doorID == 0 || len(cells) == 0 {
+		return model.CellState{}, false
+	}
+	for _, cell := range cells {
+		if cell.DoorID == doorID {
+			return cell, true
+		}
+	}
+	return model.CellState{}, false
+}
+
+func doorLeadLabelForViewer(
+	door model.DoorState,
+	hasLocal bool,
+	localRoomID model.RoomID,
+) string {
+	if hasLocal && localRoomID != "" {
+		targetRoomID, adjacent := doorAdjacentTargetRoom(localRoomID, door)
+		if adjacent && targetRoomID != "" {
+			return roomDisplayLabel(targetRoomID)
+		}
+	}
+
+	if door.RoomA != "" && door.RoomB != "" {
+		return fmt.Sprintf("%s/%s", roomDisplayLabel(door.RoomA), roomDisplayLabel(door.RoomB))
+	}
+	return ""
 }
 
 func (s *Shell) drawHUD(screen *ebiten.Image, state model.GameState) {
@@ -425,9 +601,15 @@ func (s *Shell) drawHUD(screen *ebiten.Image, state model.GameState) {
 		text.Draw(screen, lines[i], basicfont.Face7x13, int(panelX)+10, int(panelY)+20+(i*int(lineHeight)), color.RGBA{R: 231, G: 237, B: 245, A: 255})
 	}
 
+	if !showMobileHints {
+		s.drawDesktopActionIndicators(screen, state)
+	}
+
 	if showMobileHints {
 		s.drawMobileActionSurfaces(screen, state)
 	}
+
+	s.drawLatestActionFeedback(screen, state)
 }
 
 func (s *Shell) shouldShowMobileActionSurfaces() bool {
@@ -457,9 +639,10 @@ func (s *Shell) drawMobileActionSurfaces(screen *ebiten.Image, state model.GameS
 	vector.DrawFilledCircle(screen, float32(layout.JoystickCenterX), float32(layout.JoystickCenterY), float32(layout.JoystickRadius*0.38), inner, false)
 	text.Draw(screen, "MOVE", basicfont.Face7x13, int(layout.JoystickCenterX)-16, int(layout.JoystickCenterY)+4, color.RGBA{R: 248, G: 251, B: 255, A: 235})
 
-	canFire, canInteract, canReload := s.computeActionButtonStates(state)
+	canFire, canInteract, canReload, canAbility, _ := s.computeActionButtonStates(state)
 	s.drawMobileActionButton(screen, layout.FireButton, "FIRE", color.RGBA{R: 196, G: 81, B: 72, A: 196}, canFire)
 	s.drawMobileActionButton(screen, layout.InteractButton, "USE", color.RGBA{R: 78, G: 153, B: 102, A: 196}, canInteract)
+	s.drawMobileActionButton(screen, layout.AbilityButton, "ABILITY", color.RGBA{R: 133, G: 98, B: 183, A: 196}, canAbility)
 	s.drawMobileActionButton(screen, layout.ReloadButton, "RELOAD", color.RGBA{R: 71, G: 111, B: 171, A: 196}, canReload)
 }
 
@@ -487,6 +670,55 @@ func (s *Shell) drawMobileActionButton(screen *ebiten.Image, rect input.Rect, la
 	text.Draw(screen, label, basicfont.Face7x13, labelX, labelY, labelColor)
 }
 
+func (s *Shell) drawDesktopActionIndicators(screen *ebiten.Image, state model.GameState) {
+	if s == nil || s.localPlayerID == "" {
+		return
+	}
+
+	canFire, canInteract, _, canAbility, abilityLabel := s.computeActionButtonStates(state)
+	panelWidth := float32(112)
+	panelHeight := float32(28)
+	gap := float32(10)
+	startX := float32(s.screenWidth) - ((panelWidth * 3) + (gap * 2) + 14)
+	if startX < 12 {
+		startX = 12
+	}
+	y := float32(s.screenHeight) - panelHeight - 14
+	if y < 12 {
+		y = 12
+	}
+
+	s.drawDesktopActionIndicator(screen, startX, y, panelWidth, panelHeight, "SHOOT", canFire, color.RGBA{R: 188, G: 76, B: 67, A: 224})
+	s.drawDesktopActionIndicator(screen, startX+panelWidth+gap, y, panelWidth, panelHeight, "INTERACT", canInteract, color.RGBA{R: 68, G: 142, B: 95, A: 224})
+	s.drawDesktopActionIndicator(screen, startX+((panelWidth+gap)*2), y, panelWidth, panelHeight, abilityLabel, canAbility, color.RGBA{R: 133, G: 98, B: 183, A: 224})
+}
+
+func (s *Shell) drawDesktopActionIndicator(
+	screen *ebiten.Image,
+	x float32,
+	y float32,
+	w float32,
+	h float32,
+	label string,
+	enabled bool,
+	active color.RGBA,
+) {
+	fill := color.RGBA{R: 57, G: 64, B: 73, A: 166}
+	border := color.RGBA{R: 118, G: 130, B: 143, A: 186}
+	textColor := color.RGBA{R: 189, G: 201, B: 214, A: 198}
+	if enabled {
+		fill = active
+		border = color.RGBA{R: 236, G: 241, B: 247, A: 210}
+		textColor = color.RGBA{R: 249, G: 252, B: 255, A: 255}
+	}
+
+	vector.DrawFilledRect(screen, x, y, w, h, fill, false)
+	vector.StrokeRect(screen, x, y, w, h, 1.5, border, false)
+	labelX := int(x + (w / 2) - float32(len(label)*3))
+	labelY := int(y + (h / 2) + 5)
+	text.Draw(screen, label, basicfont.Face7x13, labelX, labelY, textColor)
+}
+
 func toRGBA(in color.Color) color.RGBA {
 	if typed, ok := in.(color.RGBA); ok {
 		return typed
@@ -500,19 +732,177 @@ func toRGBA(in color.Color) color.RGBA {
 	}
 }
 
-func (s *Shell) computeActionButtonStates(state model.GameState) (canFire bool, canInteract bool, canReload bool) {
+func (s *Shell) computeActionButtonStates(state model.GameState) (canFire bool, canInteract bool, canReload bool, canAbility bool, abilityLabel string) {
+	abilityLabel = "ABILITY"
 	if s == nil || s.localPlayerID == "" {
-		return false, false, false
+		return false, false, false, false, abilityLabel
 	}
 	local, found := playerByID(state.Players, s.localPlayerID)
 	if !found || !local.Alive || combat.IsActionBlocked(local, state.TickID) {
-		return false, false, false
+		return false, false, false, false, abilityLabel
 	}
 
 	canFire = local.Bullets > 0
 	canReload = local.Bullets < 255
 	canInteract = s.hasNearbyInteractable(local, state)
-	return canFire, canInteract, canReload
+	assigned := local.AssignedAbility
+	if assigned == "" {
+		for _, fallback := range abilities.AbilitiesForPlayer(local) {
+			assigned = fallback
+			break
+		}
+	}
+	if assigned != "" {
+		abilityLabel = "ABILITY"
+		canAbility = s.canUseAssignedAbility(local, state, assigned)
+	}
+	return canFire, canInteract, canReload, canAbility, abilityLabel
+}
+
+func (s *Shell) canUseAssignedAbility(local model.PlayerState, state model.GameState, ability model.AbilityType) bool {
+	if !abilities.IsKnownAbility(ability) || !abilities.CanPlayerUse(local, ability) {
+		return false
+	}
+
+	switch ability {
+	case model.AbilityAlarm:
+		return state.Phase.Current == model.PhaseDay && !state.Map.Alarm.Active
+	case model.AbilitySearch, model.AbilityDetainer, model.AbilityPickPocket:
+		return targetPlayerForPanel(local, state.Players) != ""
+	case model.AbilityCameraMan:
+		return local.CurrentRoomID == gamemap.RoomCameraRoom && state.Map.PowerOn
+	case model.AbilityTracker:
+		for _, player := range state.Players {
+			if player.ID != local.ID && player.Alive {
+				return true
+			}
+		}
+		return false
+	case model.AbilityLocksmith:
+		return state.Map.PowerOn && targetDoorForPanel(local, state.Map) != 0
+	default:
+		return true
+	}
+}
+
+func (s *Shell) drawLatestActionFeedback(screen *ebiten.Image, state model.GameState) {
+	if s == nil || s.localPlayerID == "" {
+		return
+	}
+	local, found := playerByID(state.Players, s.localPlayerID)
+	if !found || local.LastActionFeedback.Kind == "" || local.LastActionFeedback.TickID == 0 {
+		return
+	}
+
+	message := formatActionFeedback(local.LastActionFeedback)
+	if message == "none" {
+		return
+	}
+	text.Draw(
+		screen,
+		"Event: "+message,
+		basicfont.Face7x13,
+		16,
+		74,
+		color.RGBA{R: 226, G: 234, B: 243, A: 242},
+	)
+}
+
+func (s *Shell) drawAbilityInfoPanel(screen *ebiten.Image, state model.GameState) {
+	if s == nil || !s.abilityInfoOpen || s.localPlayerID == "" {
+		return
+	}
+
+	local, found := playerByID(state.Players, s.localPlayerID)
+	if !found {
+		return
+	}
+
+	assigned := local.AssignedAbility
+	if assigned == "" {
+		for _, fallback := range abilities.AbilitiesForPlayer(local) {
+			assigned = fallback
+			break
+		}
+	}
+
+	canUse := false
+	if assigned != "" {
+		canUse = s.canUseAssignedAbility(local, state, assigned)
+	}
+
+	lines := []string{
+		"Role and Ability Info",
+		fmt.Sprintf("Faction: %s", local.Faction),
+		fmt.Sprintf("Role: %s", local.Role),
+	}
+	if assigned == "" {
+		lines = append(lines, "Assigned ability: none")
+	} else {
+		lines = append(lines, fmt.Sprintf("Assigned ability: %s", assigned))
+		lines = append(lines, fmt.Sprintf("Ability ready: %s", boolLabel(canUse)))
+		lines = append(lines, abilityUsageHint(assigned))
+	}
+	if local.LastActionFeedback.Kind != "" && strings.Contains(strings.ToLower(local.LastActionFeedback.Message), "can't use that here") {
+		lines = append(lines, "Last attempt: "+local.LastActionFeedback.Message)
+	}
+	lines = append(lines, "Press V to use ability. Press I to close.")
+
+	panelWidth := clampFloat32(estimatePanelWidth(lines), 360, float32(s.screenWidth)-24)
+	panelHeight := float32(20 + (len(lines) * 16))
+	panelX := float32(12)
+	panelY := float32(96)
+	if panelY+panelHeight > float32(s.screenHeight)-12 {
+		panelY = float32(s.screenHeight) - panelHeight - 12
+	}
+
+	vector.DrawFilledRect(screen, panelX, panelY, panelWidth, panelHeight, color.RGBA{R: 7, G: 13, B: 19, A: 232}, false)
+	vector.StrokeRect(screen, panelX, panelY, panelWidth, panelHeight, 1, color.RGBA{R: 90, G: 113, B: 137, A: 255}, false)
+
+	for index, line := range lines {
+		text.Draw(
+			screen,
+			line,
+			basicfont.Face7x13,
+			int(panelX)+10,
+			int(panelY)+20+(index*16),
+			color.RGBA{R: 234, G: 241, B: 248, A: 255},
+		)
+	}
+}
+
+func abilityUsageHint(ability model.AbilityType) string {
+	switch ability {
+	case model.AbilityAlarm:
+		return "Use in day phase to trigger alarm lockdown."
+	case model.AbilitySearch:
+		return "Use near a prisoner in your room to confiscate contraband."
+	case model.AbilityCameraMan:
+		return "Use in camera room while power is on."
+	case model.AbilityDetainer:
+		return "Use near a target in your room to force detention."
+	case model.AbilityTracker:
+		return "Use to mark a living target for tracking."
+	case model.AbilityPickPocket:
+		return "Use near a target in your room to steal one item."
+	case model.AbilityHacker:
+		return "Use to toggle power state across the prison."
+	case model.AbilityDisguise:
+		return "Use to temporarily disguise yourself."
+	case model.AbilityLocksmith:
+		return "Use near an accessible door while power is on."
+	case model.AbilityChameleon:
+		return "Use to enter temporary chameleon state."
+	default:
+		return "Use when your tactical window is open."
+	}
+}
+
+func boolLabel(value bool) string {
+	if value {
+		return "yes"
+	}
+	return "no"
 }
 
 func (s *Shell) hasNearbyInteractable(local model.PlayerState, state model.GameState) bool {
@@ -521,7 +911,7 @@ func (s *Shell) hasNearbyInteractable(local model.PlayerState, state model.GameS
 			if door.ID == 0 {
 				continue
 			}
-			if door.RoomA == local.CurrentRoomID || door.RoomB == local.CurrentRoomID {
+			if canViewerTraverseDoor(local, door, state.Map) {
 				return true
 			}
 		}
@@ -573,8 +963,8 @@ func (s *Shell) drawPauseMenu(screen *ebiten.Image) {
 		"Controls",
 		"Move: WASD/Arrows | Sprint: Shift",
 		"Aim/Fire: Mouse + Space/LMB",
-		"Interact: E/F | Reload: R",
-		"Panels: Tab/C/V/B/X + [ ] + Enter",
+		"Interact: E/F | Ability: V | Ability Info: I | Reload: R",
+		"Panels: Tab/C/B/X + [ ] + Enter",
 		"",
 		"Esc or P: Resume",
 		"Q: Exit match to menu",
@@ -729,9 +1119,11 @@ func (s *Shell) captureInputSnapshot() input.InputSnapshot {
 		MoveRight: ebiten.IsKeyPressed(ebiten.KeyD) || ebiten.IsKeyPressed(ebiten.KeyArrowRight),
 		Sprint:    ebiten.IsKeyPressed(ebiten.KeyShift) || ebiten.IsKeyPressed(ebiten.KeyShiftLeft) || ebiten.IsKeyPressed(ebiten.KeyShiftRight),
 
-		InteractPressed: ebiten.IsKeyPressed(ebiten.KeyE) || ebiten.IsKeyPressed(ebiten.KeyF),
-		ReloadPressed:   ebiten.IsKeyPressed(ebiten.KeyR),
-		FirePressed:     ebiten.IsKeyPressed(ebiten.KeySpace) || ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft),
+		InteractPressed:    ebiten.IsKeyPressed(ebiten.KeyE) || ebiten.IsKeyPressed(ebiten.KeyF),
+		AbilityPressed:     ebiten.IsKeyPressed(ebiten.KeyV) || ebiten.IsKeyPressed(ebiten.KeyG),
+		AbilityInfoPressed: ebiten.IsKeyPressed(ebiten.KeyI),
+		ReloadPressed:      ebiten.IsKeyPressed(ebiten.KeyR),
+		FirePressed:        ebiten.IsKeyPressed(ebiten.KeySpace) || ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft),
 
 		HasAim:    true,
 		AimWorldX: aimWorldX,
@@ -739,7 +1131,7 @@ func (s *Shell) captureInputSnapshot() input.InputSnapshot {
 
 		PanelInventoryPressed: ebiten.IsKeyPressed(ebiten.KeyTab),
 		PanelCardsPressed:     ebiten.IsKeyPressed(ebiten.KeyC),
-		PanelAbilitiesPressed: ebiten.IsKeyPressed(ebiten.KeyV),
+		PanelAbilitiesPressed: false,
 		PanelMarketPressed:    ebiten.IsKeyPressed(ebiten.KeyB) || ebiten.IsKeyPressed(ebiten.KeyM),
 		PanelEscapePressed:    ebiten.IsKeyPressed(ebiten.KeyX),
 		PanelPrevPressed:      ebiten.IsKeyPressed(ebiten.KeyBracketLeft) || ebiten.IsKeyPressed(ebiten.KeyPageUp),

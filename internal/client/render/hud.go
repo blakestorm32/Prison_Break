@@ -133,13 +133,13 @@ func BuildCompactHUDLines(state model.GameState, localPlayerID model.PlayerID, o
 
 	local, found := playerByID(state.Players, localPlayerID)
 	if !found {
-		lines = append(lines, "Faction --")
+		lines = append(lines, "Faction -- | Role --")
 		lines = append(lines, phaseLabel)
 		lines = append(lines, pingLabel)
 		return lines
 	}
 
-	lines = append(lines, fmt.Sprintf("Faction %s", local.Faction))
+	lines = append(lines, fmt.Sprintf("Faction %s | Role %s", local.Faction, local.Role))
 	lines = append(lines, phaseLabel)
 	lines = append(lines, pingLabel)
 	return lines
@@ -332,10 +332,10 @@ func objectiveProgressSummary(state model.GameState, local model.PlayerState) st
 func actionHintLines(options HUDOptions) []string {
 	lines := make([]string, 0, 2)
 	if options.ShowDesktopActionHints {
-		lines = append(lines, "Controls[Desktop] Move WASD/Arrows | Sprint Shift | Fire Space/LMB | Interact E/F | Reload R | Panels Tab/C/V/B/X + [ ] + Enter | Menu Esc")
+		lines = append(lines, "Controls[Desktop] Move WASD/Arrows | Sprint Shift | Fire Space/LMB | Interact E/F | Ability V | Info I | Reload R | Panels Tab/C/B/X + [ ] + Enter | Menu Esc")
 	}
 	if options.ShowMobileActionHints {
-		lines = append(lines, "Controls[Mobile] Left joystick move | Fire/Use/Reload buttons + panel tabs/use buttons")
+		lines = append(lines, "Controls[Mobile] Left joystick move | Fire/Use/Ability/Reload buttons + panel tabs/use buttons")
 	}
 	return lines
 }

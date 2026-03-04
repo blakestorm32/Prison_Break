@@ -65,7 +65,8 @@ func TestBuildHUDLinesIncludesPhaseHealthAmmoAndCooldowns(t *testing.T) {
 	assertContains(t, joined, "speed_boost:8t(x2)")
 	assertContains(t, joined, "Power OFF")
 	assertContains(t, joined, "Controls[Desktop]")
-	assertContains(t, joined, "Panels Tab/C/V/B/X")
+	assertContains(t, joined, "Ability V | Info I")
+	assertContains(t, joined, "Panels Tab/C/B/X")
 	assertContains(t, joined, "Escape ")
 	assertContains(t, joined, "ObjectiveProgress ")
 	assertContains(t, joined, "ActionFeedback combat:warning @49 (Hit by guard.)")
@@ -192,6 +193,7 @@ func TestBuildCompactHUDLinesReturnsMinimalOverlay(t *testing.T) {
 			{
 				ID:      "p1",
 				Faction: model.FactionPrisoner,
+				Role:    model.RoleGangMember,
 			},
 		},
 	}
@@ -201,7 +203,7 @@ func TestBuildCompactHUDLinesReturnsMinimalOverlay(t *testing.T) {
 		PingMS:             48,
 	})
 	joined := strings.Join(lines, " | ")
-	assertContains(t, joined, "Faction prisoner")
+	assertContains(t, joined, "Faction prisoner | Role gang_member")
 	assertContains(t, joined, "Phase night")
 	assertContains(t, joined, "Ping 48ms")
 	assertNotContains(t, joined, "Controls[Desktop]")

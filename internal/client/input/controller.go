@@ -27,9 +27,11 @@ type InputSnapshot struct {
 	MoveRight bool
 	Sprint    bool
 
-	InteractPressed bool
-	ReloadPressed   bool
-	FirePressed     bool
+	InteractPressed    bool
+	AbilityPressed     bool
+	AbilityInfoPressed bool
+	ReloadPressed      bool
+	FirePressed        bool
 
 	HasAim    bool
 	AimWorldX float32
@@ -70,6 +72,7 @@ type MobileLayout struct {
 
 	FireButton     Rect
 	InteractButton Rect
+	AbilityButton  Rect
 	ReloadButton   Rect
 }
 
@@ -110,6 +113,12 @@ func DefaultMobileLayout(screenWidth int, screenHeight int) MobileLayout {
 			MaxX: rightBaseX - margin,
 			MaxY: baseY + (buttonSize * 0.55),
 		},
+		AbilityButton: Rect{
+			MinX: rightBaseX - buttonSize - margin,
+			MinY: baseY - (buttonSize * 1.45),
+			MaxX: rightBaseX - margin,
+			MaxY: baseY - (buttonSize * 0.45),
+		},
 		ReloadButton: Rect{
 			MinX: rightBaseX,
 			MinY: baseY + (buttonSize * 0.25),
@@ -140,6 +149,7 @@ type Controller struct {
 
 	prevFirePressed     bool
 	prevInteractPressed bool
+	prevAbilityPressed  bool
 	prevReloadPressed   bool
 	lastMoveTargetTick  uint64
 	lastAimTargetTick   uint64
@@ -281,6 +291,7 @@ func (c *Controller) BuildCommands(
 
 	firePressed := snapshot.FirePressed || c.touchInsideButton(snapshot.Touches, c.mobile.FireButton)
 	interactPressed := snapshot.InteractPressed || c.touchInsideButton(snapshot.Touches, c.mobile.InteractButton)
+	abilityPressed := snapshot.AbilityPressed || c.touchInsideButton(snapshot.Touches, c.mobile.AbilityButton)
 	reloadPressed := snapshot.ReloadPressed || c.touchInsideButton(snapshot.Touches, c.mobile.ReloadButton)
 
 	commands := make([]model.InputCommand, 0, 5)
@@ -327,12 +338,25 @@ func (c *Controller) BuildCommands(
 		}
 	}
 
+	if edgePressed(c.prevAbilityPressed, abilityPressed) && localPlayer != nil {
+		ability := resolveTriggeredAbility(*localPlayer)
+		if ability != "" {
+			payload, err := json.Marshal(model.AbilityUsePayload{
+				Ability: ability,
+			})
+			if err == nil {
+				commands = append(commands, c.newCommand(model.CmdUseAbility, payload, targetTick))
+			}
+		}
+	}
+
 	if edgePressed(c.prevReloadPressed, reloadPressed) {
 		commands = append(commands, c.newCommand(model.CmdReload, nil, targetTick))
 	}
 
 	c.prevFirePressed = firePressed
 	c.prevInteractPressed = interactPressed
+	c.prevAbilityPressed = abilityPressed
 	c.prevReloadPressed = reloadPressed
 
 	return commands
@@ -450,4 +474,18 @@ func normalizeVector(x float32, y float32) (float32, float32) {
 		return x, y
 	}
 	return float32(float64(x) / magnitude), float32(float64(y) / magnitude)
+}
+
+func resolveTriggeredAbility(local model.PlayerState) model.AbilityType {
+	if abilities.IsKnownAbility(local.AssignedAbility) && abilities.CanPlayerUse(local, local.AssignedAbility) {
+		return local.AssignedAbility
+	}
+
+	for _, ability := range abilities.AbilitiesForPlayer(local) {
+		if ability != "" {
+			return ability
+		}
+	}
+
+	return ""
 }

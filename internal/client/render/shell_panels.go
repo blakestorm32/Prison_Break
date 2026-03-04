@@ -50,6 +50,14 @@ type actionPanelLayout struct {
 	useButton    input.Rect
 }
 
+type actionPanelAvailability struct {
+	inventory bool
+	cards     bool
+	abilities bool
+	market    bool
+	escape    bool
+}
+
 func (s *Shell) augmentSnapshotWithPanelTouches(snapshot input.InputSnapshot) input.InputSnapshot {
 	if s == nil || len(snapshot.Touches) == 0 {
 		return snapshot
@@ -126,23 +134,34 @@ func (s *Shell) updateActionPanelCommands(
 	nextEdge := current.next && !previous.next
 	useEdge := current.use && !previous.use
 
-	if inventoryEdge {
+	if localPlayer == nil {
+		s.panelMode = actionPanelNone
+		return nil
+	}
+
+	availability := computeActionPanelAvailability(*localPlayer)
+
+	if inventoryEdge && availability.inventory {
 		s.toggleActionPanel(actionPanelInventory)
 	}
-	if cardsEdge {
+	if cardsEdge && availability.cards {
 		s.toggleActionPanel(actionPanelCards)
 	}
-	if abilitiesEdge {
+	if abilitiesEdge && availability.abilities {
 		s.toggleActionPanel(actionPanelAbilities)
 	}
-	if marketEdge {
+	if marketEdge && availability.market {
 		s.toggleActionPanel(actionPanelMarket)
 	}
-	if escapeEdge {
+	if escapeEdge && availability.escape {
 		s.toggleActionPanel(actionPanelEscape)
 	}
 
-	if s.panelMode == actionPanelNone || localPlayer == nil {
+	if !isPanelModeAvailable(s.panelMode, availability) {
+		s.panelMode = actionPanelNone
+		return nil
+	}
+	if s.panelMode == actionPanelNone {
 		return nil
 	}
 
@@ -287,6 +306,36 @@ func (s *Shell) toggleActionPanel(next actionPanelMode) {
 	s.panelMode = next
 }
 
+func computeActionPanelAvailability(local model.PlayerState) actionPanelAvailability {
+	prisonerAccess := gamemap.IsPrisonerPlayer(local)
+	return actionPanelAvailability{
+		inventory: len(inventoryPanelEntries(local)) > 0,
+		cards:     len(cardPanelEntries(local)) > 0,
+		abilities: len(abilityPanelEntries(local)) > 0,
+		market:    prisonerAccess,
+		escape:    prisonerAccess,
+	}
+}
+
+func isPanelModeAvailable(mode actionPanelMode, availability actionPanelAvailability) bool {
+	switch mode {
+	case actionPanelNone:
+		return true
+	case actionPanelInventory:
+		return availability.inventory
+	case actionPanelCards:
+		return availability.cards
+	case actionPanelAbilities:
+		return availability.abilities
+	case actionPanelMarket:
+		return availability.market
+	case actionPanelEscape:
+		return availability.escape
+	default:
+		return false
+	}
+}
+
 func clampPanelIndex(index int, count int) int {
 	if count <= 0 {
 		return 0
@@ -340,6 +389,13 @@ func cardPanelEntries(player model.PlayerState) []model.CardType {
 }
 
 func abilityPanelEntries(player model.PlayerState) []model.AbilityType {
+	if player.AssignedAbility != "" {
+		if abilities.IsKnownAbility(player.AssignedAbility) && abilities.CanPlayerUse(player, player.AssignedAbility) {
+			return []model.AbilityType{player.AssignedAbility}
+		}
+		return nil
+	}
+
 	catalog := []model.AbilityType{
 		model.AbilityAlarm,
 		model.AbilitySearch,
@@ -380,7 +436,7 @@ func abilityPayloadForPanel(ability model.AbilityType, local model.PlayerState, 
 	case model.AbilitySearch, model.AbilityDetainer, model.AbilityTracker, model.AbilityPickPocket:
 		payload.TargetPlayerID = targetPlayerForPanel(local, state.Players)
 	case model.AbilityLocksmith:
-		payload.TargetDoorID = targetDoorForPanel(local, state.Map.Doors)
+		payload.TargetDoorID = targetDoorForPanel(local, state.Map)
 	}
 
 	return payload
@@ -393,7 +449,7 @@ func cardPayloadForPanel(card model.CardType, local model.PlayerState, state mod
 
 	switch card {
 	case model.CardLockSnap, model.CardDoorStop:
-		payload.TargetDoorID = targetDoorForPanel(local, state.Map.Doors)
+		payload.TargetDoorID = targetDoorForPanel(local, state.Map)
 	case model.CardItemSteal, model.CardItemGrab:
 		payload.TargetPlayerID = targetPlayerForPanel(local, state.Players)
 	case model.CardMoney:
@@ -454,24 +510,16 @@ func targetPlayerForPanel(local model.PlayerState, players []model.PlayerState) 
 	return bestID
 }
 
-func targetDoorForPanel(local model.PlayerState, doors []model.DoorState) model.DoorID {
-	if len(doors) == 0 {
+func targetDoorForPanel(local model.PlayerState, mapState model.MapState) model.DoorID {
+	if len(mapState.Doors) == 0 {
 		return 0
 	}
 
-	if local.CurrentRoomID != "" {
-		for _, door := range doors {
-			if door.ID == 0 {
-				continue
-			}
-			if door.RoomA == local.CurrentRoomID || door.RoomB == local.CurrentRoomID {
-				return door.ID
-			}
+	for _, door := range mapState.Doors {
+		if door.ID == 0 {
+			continue
 		}
-	}
-
-	for _, door := range doors {
-		if door.ID != 0 {
+		if canViewerTraverseDoor(local, door, mapState) {
 			return door.ID
 		}
 	}
@@ -628,11 +676,27 @@ func (s *Shell) drawActionPanels(screen *ebiten.Image, state model.GameState) {
 	}
 
 	layout := s.actionPanelLayout()
-	s.drawActionPanelTab(screen, layout.inventoryTab, "Inventory", "Tab", s.panelMode == actionPanelInventory)
-	s.drawActionPanelTab(screen, layout.cardsTab, "Cards", "C", s.panelMode == actionPanelCards)
-	s.drawActionPanelTab(screen, layout.abilitiesTab, "Abilities", "V", s.panelMode == actionPanelAbilities)
-	s.drawActionPanelTab(screen, layout.marketTab, "Market", "B", s.panelMode == actionPanelMarket)
-	s.drawActionPanelTab(screen, layout.escapeTab, "Escape", "X", s.panelMode == actionPanelEscape)
+	availability := computeActionPanelAvailability(local)
+
+	if availability.inventory {
+		s.drawActionPanelTab(screen, layout.inventoryTab, "Inventory", "Tab", s.panelMode == actionPanelInventory)
+	}
+	if availability.cards {
+		s.drawActionPanelTab(screen, layout.cardsTab, "Cards", "C", s.panelMode == actionPanelCards)
+	}
+	if availability.abilities {
+		s.drawActionPanelTab(screen, layout.abilitiesTab, "Abilities", "Click", s.panelMode == actionPanelAbilities)
+	}
+	if availability.market {
+		s.drawActionPanelTab(screen, layout.marketTab, "Market", "B", s.panelMode == actionPanelMarket)
+	}
+	if availability.escape {
+		s.drawActionPanelTab(screen, layout.escapeTab, "Escape", "X", s.panelMode == actionPanelEscape)
+	}
+
+	if !isPanelModeAvailable(s.panelMode, availability) {
+		s.panelMode = actionPanelNone
+	}
 
 	if s.panelMode == actionPanelNone {
 		return
