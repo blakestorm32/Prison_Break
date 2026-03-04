@@ -115,6 +115,27 @@ func TestControllerActionButtonsAreEdgeTriggered(t *testing.T) {
 	}
 }
 
+func TestControllerInitialClientSeqSeedsSequence(t *testing.T) {
+	controller := NewController(ControllerConfig{
+		PlayerID:         "p1",
+		InitialClientSeq: 41,
+	})
+
+	commands := controller.BuildCommands(InputSnapshot{
+		InteractPressed: true,
+	}, 5, nil)
+
+	if len(commands) != 1 {
+		t.Fatalf("expected one interact command, got %+v", commands)
+	}
+	if commands[0].Type != model.CmdInteract {
+		t.Fatalf("expected interact command, got %+v", commands)
+	}
+	if commands[0].ClientSeq != 42 {
+		t.Fatalf("expected initial client seq seed to resume at 42, got %d", commands[0].ClientSeq)
+	}
+}
+
 func TestControllerAbilityButtonIsEdgeTriggeredAndUsesAssignedAbility(t *testing.T) {
 	controller := NewController(ControllerConfig{
 		PlayerID: "p1",

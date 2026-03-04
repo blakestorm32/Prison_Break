@@ -48,3 +48,21 @@ func TestBuildPreMatchLinesManualModeConnectingHint(t *testing.T) {
 		t.Fatalf("expected manual mode spawn hint, got %q", joined)
 	}
 }
+
+func TestClientAppRecordClientSeqTracksPerPlayerHighWaterMark(t *testing.T) {
+	app := NewClientApp(ClientAppConfig{
+		ScreenWidth:  1280,
+		ScreenHeight: 720,
+	})
+
+	app.recordClientSeq("p1", 5)
+	app.recordClientSeq("p1", 3)
+	app.recordClientSeq("p2", 2)
+
+	if got := app.seedClientSeq("p1"); got != 5 {
+		t.Fatalf("expected p1 seed seq 5, got %d", got)
+	}
+	if got := app.seedClientSeq("p2"); got != 2 {
+		t.Fatalf("expected p2 seed seq 2, got %d", got)
+	}
+}

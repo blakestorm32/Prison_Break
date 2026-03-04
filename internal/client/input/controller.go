@@ -138,6 +138,8 @@ type ControllerConfig struct {
 	FireWeapon model.ItemType
 
 	MobileLayout MobileLayout
+
+	InitialClientSeq uint64
 }
 
 type Controller struct {
@@ -173,9 +175,10 @@ func NewController(config ControllerConfig) *Controller {
 	}
 
 	return &Controller{
-		playerID:   model.PlayerID(trimmedID),
-		fireWeapon: fireWeapon,
-		mobile:     mobile,
+		playerID:      model.PlayerID(trimmedID),
+		nextClientSeq: config.InitialClientSeq,
+		fireWeapon:    fireWeapon,
+		mobile:        mobile,
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/text"
 	"golang.org/x/image/font/basicfont"
 
+	"prison-break/internal/client/input"
 	"prison-break/internal/client/netclient"
 	"prison-break/internal/client/onboarding"
 	"prison-break/internal/client/prematch"
@@ -77,6 +78,8 @@ type ClientApp struct {
 	codexPages []onboarding.CodexPage
 
 	lastSendWarnAt time.Time
+
+	lastClientSeqByPlayer map[model.PlayerID]uint64
 }
 
 func NewClientApp(config ClientAppConfig) *ClientApp {
@@ -114,20 +117,21 @@ func NewClientApp(config ClientAppConfig) *ClientApp {
 	}
 
 	return &ClientApp{
-		screenWidth:          screenWidth,
-		screenHeight:         screenHeight,
-		sessionConfig:        sessionCfg,
-		flow:                 flow,
-		lastStage:            flow.Stage(),
-		connectResults:       make(chan connectResult, 4),
-		lobbyFetchResults:    make(chan lobbyFetchResult, 4),
-		manualUITestMode:     config.ManualUITestMode,
-		manualUITestClients:  manualClientCount,
-		manualHarnessResults: make(chan manualHarnessResult, 2),
-		codexPages:           onboarding.Pages(),
-		lastSendWarnAt:       time.Time{},
-		connectAttemptID:     0,
-		lobbyFetchAttemptID:  0,
+		screenWidth:           screenWidth,
+		screenHeight:          screenHeight,
+		sessionConfig:         sessionCfg,
+		flow:                  flow,
+		lastStage:             flow.Stage(),
+		connectResults:        make(chan connectResult, 4),
+		lobbyFetchResults:     make(chan lobbyFetchResult, 4),
+		manualUITestMode:      config.ManualUITestMode,
+		manualUITestClients:   manualClientCount,
+		manualHarnessResults:  make(chan manualHarnessResult, 2),
+		codexPages:            onboarding.Pages(),
+		lastSendWarnAt:        time.Time{},
+		connectAttemptID:      0,
+		lobbyFetchAttemptID:   0,
+		lastClientSeqByPlayer: make(map[model.PlayerID]uint64),
 	}
 }
 
@@ -599,16 +603,25 @@ func (a *ClientApp) ensureShell() {
 	if a.session == nil || a.shell != nil {
 		return
 	}
+	localPlayerID := a.session.LocalPlayerID()
+	controller := input.NewController(input.ControllerConfig{
+		PlayerID:         localPlayerID,
+		ScreenWidth:      a.screenWidth,
+		ScreenHeight:     a.screenHeight,
+		InitialClientSeq: a.seedClientSeq(localPlayerID),
+	})
 
 	a.shell = NewShell(ShellConfig{
 		ScreenWidth:             a.screenWidth,
 		ScreenHeight:            a.screenHeight,
-		LocalPlayerID:           a.session.LocalPlayerID(),
+		LocalPlayerID:           localPlayerID,
 		SpectatorFollowPlayerID: a.session.SpectatorFollowPlayerID(),
 		SpectatorFollowSlot:     a.session.SpectatorFollowSlot(),
 		SpectatorSlotCount:      a.session.SpectatorSlotCount(),
 		Store:                   a.session.Store(),
+		InputController:         controller,
 		OnInputCommand: func(command model.InputCommand) {
+			a.recordClientSeq(command.PlayerID, command.ClientSeq)
 			if err := a.session.SendInputCommand(command); err != nil {
 				if errors.Is(err, netclient.ErrReadOnlySession) {
 					return
@@ -622,6 +635,32 @@ func (a *ClientApp) ensureShell() {
 			}
 		},
 	})
+}
+
+func (a *ClientApp) seedClientSeq(playerID model.PlayerID) uint64 {
+	if a == nil || playerID == "" {
+		return 0
+	}
+
+	seed := a.lastClientSeqByPlayer[playerID]
+	if a.session != nil && a.session.LocalPlayerID() == playerID {
+		if acked := a.session.LastServerAckedClientSeq(); acked > seed {
+			seed = acked
+		}
+	}
+	return seed
+}
+
+func (a *ClientApp) recordClientSeq(playerID model.PlayerID, clientSeq uint64) {
+	if a == nil || playerID == "" || clientSeq == 0 {
+		return
+	}
+	if a.lastClientSeqByPlayer == nil {
+		a.lastClientSeqByPlayer = make(map[model.PlayerID]uint64)
+	}
+	if clientSeq > a.lastClientSeqByPlayer[playerID] {
+		a.lastClientSeqByPlayer[playerID] = clientSeq
+	}
 }
 
 func (a *ClientApp) startConnect(intent prematch.ConnectIntent) {
