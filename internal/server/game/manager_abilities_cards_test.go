@@ -2,6 +2,7 @@ package game
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,6 +76,169 @@ func TestAbilitySearchConfiscatesContrabandAndIsOncePerDay(t *testing.T) {
 	inventory = playerInventoryForTest(manager, match.MatchID, "pris")
 	if !items.HasItem(model.PlayerState{Inventory: inventory}, model.ItemShiv, 1) {
 		t.Fatalf("expected once-per-day search to block second same-day confiscation")
+	}
+}
+
+func TestAbilityUseAutoTargetsWhenPayloadOmitsTarget(t *testing.T) {
+	manager, _, factory := newTestManager(
+		Config{
+			MinPlayers:    3,
+			MaxPlayers:    6,
+			TickRateHz:    2,
+			DaySeconds:    20,
+			NightSeconds:  20,
+			MaxCycles:     6,
+			MatchIDPrefix: "ab-auto-target",
+		},
+		time.Date(2026, 2, 22, 12, 0, 0, 0, time.UTC),
+	)
+	t.Cleanup(manager.Close)
+
+	match := manager.CreateMatch()
+	if _, err := manager.JoinMatch(match.MatchID, "auth", "Authority"); err != nil {
+		t.Fatalf("join auth failed: %v", err)
+	}
+	if _, err := manager.JoinMatch(match.MatchID, "pris", "Prisoner"); err != nil {
+		t.Fatalf("join pris failed: %v", err)
+	}
+	if _, err := manager.JoinMatch(match.MatchID, "far", "Far"); err != nil {
+		t.Fatalf("join far failed: %v", err)
+	}
+	if _, err := manager.StartMatch(match.MatchID); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+
+	setPlayerRoleAndFactionForTest(manager, match.MatchID, "auth", model.RoleDeputy, model.FactionAuthority)
+	setPlayerRoleAndFactionForTest(manager, match.MatchID, "pris", model.RoleGangMember, model.FactionPrisoner)
+	setPlayerRoleAndFactionForTest(manager, match.MatchID, "far", model.RoleGangMember, model.FactionPrisoner)
+	setPlayerAssignedAbilityForTest(manager, match.MatchID, "auth", model.AbilitySearch)
+	setPlayerRoomForTest(manager, match.MatchID, "auth", gamemap.RoomCorridorMain)
+	setPlayerRoomForTest(manager, match.MatchID, "pris", gamemap.RoomCorridorMain)
+	setPlayerRoomForTest(manager, match.MatchID, "far", gamemap.RoomCourtyard)
+	setPlayerPositionForTest(manager, match.MatchID, "auth", model.Vector2{X: 4, Y: 4})
+	setPlayerPositionForTest(manager, match.MatchID, "pris", model.Vector2{X: 5, Y: 4})
+	setPlayerPositionForTest(manager, match.MatchID, "far", model.Vector2{X: 12, Y: 12})
+	setPlayerInventoryForTest(manager, match.MatchID, "pris", []model.ItemStack{
+		{Item: model.ItemShiv, Quantity: 1},
+	})
+
+	ticker := factory.Last()
+	if ticker == nil {
+		t.Fatalf("expected ticker after start")
+	}
+
+	mustSubmitUseAbility(t, manager, match.MatchID, "auth", 1, model.AbilitySearch)
+	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 1, 0, time.UTC))
+	waitForTick(t, manager, match.MatchID, 1)
+
+	inventory := playerInventoryForTest(manager, match.MatchID, "pris")
+	if items.HasItem(model.PlayerState{Inventory: inventory}, model.ItemShiv, 1) {
+		t.Fatalf("expected server auto-targeting to select in-room target and confiscate contraband")
+	}
+}
+
+func TestAbilityUseDeniedWhenAssignedAbilityMismatch(t *testing.T) {
+	manager, _, factory := newTestManager(
+		Config{
+			MinPlayers:    2,
+			MaxPlayers:    4,
+			TickRateHz:    2,
+			DaySeconds:    20,
+			NightSeconds:  20,
+			MaxCycles:     6,
+			MatchIDPrefix: "ab-mismatch",
+		},
+		time.Date(2026, 2, 22, 12, 0, 0, 0, time.UTC),
+	)
+	t.Cleanup(manager.Close)
+
+	match := manager.CreateMatch()
+	if _, err := manager.JoinMatch(match.MatchID, "auth", "Authority"); err != nil {
+		t.Fatalf("join auth failed: %v", err)
+	}
+	if _, err := manager.JoinMatch(match.MatchID, "pris", "Prisoner"); err != nil {
+		t.Fatalf("join pris failed: %v", err)
+	}
+	if _, err := manager.StartMatch(match.MatchID); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+
+	setPlayerRoleAndFactionForTest(manager, match.MatchID, "auth", model.RoleDeputy, model.FactionAuthority)
+	setPlayerRoleAndFactionForTest(manager, match.MatchID, "pris", model.RoleGangMember, model.FactionPrisoner)
+	setPlayerAssignedAbilityForTest(manager, match.MatchID, "auth", model.AbilityTracker)
+	setPlayerRoomForTest(manager, match.MatchID, "auth", gamemap.RoomCorridorMain)
+	setPlayerRoomForTest(manager, match.MatchID, "pris", gamemap.RoomCorridorMain)
+	setPlayerInventoryForTest(manager, match.MatchID, "pris", []model.ItemStack{
+		{Item: model.ItemShiv, Quantity: 1},
+	})
+
+	ticker := factory.Last()
+	if ticker == nil {
+		t.Fatalf("expected ticker after start")
+	}
+
+	mustSubmitUseAbilityTargetForTest(t, manager, match.MatchID, "auth", 1, model.AbilitySearch, "pris")
+	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 1, 0, time.UTC))
+	waitForTick(t, manager, match.MatchID, 1)
+
+	inventory := playerInventoryForTest(manager, match.MatchID, "pris")
+	if !items.HasItem(model.PlayerState{Inventory: inventory}, model.ItemShiv, 1) {
+		t.Fatalf("expected mismatched assigned ability to block search effect")
+	}
+
+	feedback := playerLastActionFeedbackForTest(manager, match.MatchID, "auth")
+	if !strings.Contains(feedback.Message, "can't use that here") {
+		t.Fatalf("expected clear denial feedback message, got %+v", feedback)
+	}
+	if !strings.Contains(feedback.Message, string(model.AbilityTracker)) {
+		t.Fatalf("expected denial feedback to mention assigned ability, got %+v", feedback)
+	}
+}
+
+func TestAbilityUseDeniedMessageExplainsContextRequirement(t *testing.T) {
+	manager, _, factory := newTestManager(
+		Config{
+			MinPlayers:    2,
+			MaxPlayers:    4,
+			TickRateHz:    2,
+			DaySeconds:    20,
+			NightSeconds:  20,
+			MaxCycles:     6,
+			MatchIDPrefix: "ab-context",
+		},
+		time.Date(2026, 2, 22, 12, 0, 0, 0, time.UTC),
+	)
+	t.Cleanup(manager.Close)
+
+	match := manager.CreateMatch()
+	if _, err := manager.JoinMatch(match.MatchID, "cam", "Camera"); err != nil {
+		t.Fatalf("join cam failed: %v", err)
+	}
+	if _, err := manager.JoinMatch(match.MatchID, "pris", "Prisoner"); err != nil {
+		t.Fatalf("join pris failed: %v", err)
+	}
+	if _, err := manager.StartMatch(match.MatchID); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+
+	setPlayerRoleAndFactionForTest(manager, match.MatchID, "cam", model.RoleDeputy, model.FactionAuthority)
+	setPlayerRoleAndFactionForTest(manager, match.MatchID, "pris", model.RoleGangMember, model.FactionPrisoner)
+	setPlayerAssignedAbilityForTest(manager, match.MatchID, "cam", model.AbilityCameraMan)
+	setPlayerRoomForTest(manager, match.MatchID, "cam", gamemap.RoomCorridorMain)
+	setMapPowerForTest(manager, match.MatchID, true)
+
+	ticker := factory.Last()
+	if ticker == nil {
+		t.Fatalf("expected ticker after start")
+	}
+
+	mustSubmitUseAbility(t, manager, match.MatchID, "cam", 1, model.AbilityCameraMan)
+	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 1, 0, time.UTC))
+	waitForTick(t, manager, match.MatchID, 1)
+
+	feedback := playerLastActionFeedbackForTest(manager, match.MatchID, "cam")
+	if !strings.Contains(feedback.Message, "can't use that here: go to the camera room") {
+		t.Fatalf("expected contextual denial feedback for camera room requirement, got %+v", feedback)
 	}
 }
 
@@ -274,6 +438,65 @@ func TestAbilityCameraManRequiresCameraRoomAndPowerAndMarksRestrictedPrisoners(t
 	}
 	if end := effectEndTickForTest(manager, match.MatchID, "free", model.EffectTracked); end != 0 {
 		t.Fatalf("expected non-restricted prisoner to avoid camera_man tracking, got end tick %d", end)
+	}
+}
+
+func TestAbilityCameraManActivatesWithoutRestrictedTargetsAndConsumesCooldown(t *testing.T) {
+	manager, _, factory := newTestManager(
+		Config{
+			MinPlayers:    2,
+			MaxPlayers:    4,
+			TickRateHz:    2,
+			DaySeconds:    20,
+			NightSeconds:  20,
+			MaxCycles:     6,
+			MatchIDPrefix: "ab-camera-zero",
+		},
+		time.Date(2026, 2, 22, 12, 0, 0, 0, time.UTC),
+	)
+	t.Cleanup(manager.Close)
+
+	match := manager.CreateMatch()
+	if _, err := manager.JoinMatch(match.MatchID, "cam", "Camera"); err != nil {
+		t.Fatalf("join cam failed: %v", err)
+	}
+	if _, err := manager.JoinMatch(match.MatchID, "free", "Free"); err != nil {
+		t.Fatalf("join free failed: %v", err)
+	}
+	if _, err := manager.StartMatch(match.MatchID); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+
+	setPlayerRoleAndFactionForTest(manager, match.MatchID, "cam", model.RoleDeputy, model.FactionAuthority)
+	setPlayerRoleAndFactionForTest(manager, match.MatchID, "free", model.RoleGangMember, model.FactionPrisoner)
+	setPlayerRoomForTest(manager, match.MatchID, "cam", gamemap.RoomCameraRoom)
+	setPlayerRoomForTest(manager, match.MatchID, "free", gamemap.RoomCorridorMain)
+	setMapPowerForTest(manager, match.MatchID, true)
+
+	ticker := factory.Last()
+	if ticker == nil {
+		t.Fatalf("expected ticker after start")
+	}
+
+	mustSubmitUseAbility(t, manager, match.MatchID, "cam", 1, model.AbilityCameraMan)
+	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 1, 0, time.UTC))
+	waitForTick(t, manager, match.MatchID, 1)
+
+	firstFeedback := playerLastActionFeedbackForTest(manager, match.MatchID, "cam")
+	if !strings.Contains(firstFeedback.Message, "Camera sweep marked 0 restricted prisoner(s).") {
+		t.Fatalf("expected camera ability to activate with zero targets, got %+v", firstFeedback)
+	}
+	if strings.Contains(strings.ToLower(firstFeedback.Message), "can't use that here") {
+		t.Fatalf("expected camera ability not to deny when zero restricted targets, got %+v", firstFeedback)
+	}
+
+	mustSubmitUseAbility(t, manager, match.MatchID, "cam", 2, model.AbilityCameraMan)
+	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 2, 0, time.UTC))
+	waitForTick(t, manager, match.MatchID, 2)
+
+	secondFeedback := playerLastActionFeedbackForTest(manager, match.MatchID, "cam")
+	if !strings.Contains(secondFeedback.Message, "cooldown") {
+		t.Fatalf("expected second immediate camera use to be blocked by cooldown, got %+v", secondFeedback)
 	}
 }
 

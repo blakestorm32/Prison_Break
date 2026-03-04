@@ -460,8 +460,9 @@ func (m *Manager) StartMatch(matchID model.MatchID) (MatchSnapshot, error) {
 	session.npcPrisonerBribeState = make(map[model.EntityID]npcPrisonerBribeState)
 	session.replayEntries = make([]ReplayEntry, 0, 256)
 	syncGameStatePlayersLocked(session)
-	assignCellsLocked(session)
 	_ = roles.ApplyAssignments(&session.gameState, session.matchID)
+	assignRandomAbilitiesLocked(session)
+	assignCellsLocked(session)
 	combat.ApplyRoleLoadouts(&session.gameState)
 	spawnNPCPrisonersLocked(session)
 
@@ -981,6 +982,31 @@ func syncGameStatePlayersLocked(session *matchSession) {
 	session.gameState.Players = nextPlayers
 }
 
+func assignRandomAbilitiesLocked(session *matchSession) {
+	if session == nil || len(session.gameState.Players) == 0 {
+		return
+	}
+
+	for index := range session.gameState.Players {
+		player := &session.gameState.Players[index]
+		player.AssignedAbility = deterministicAssignedAbility(session.matchID, *player)
+	}
+}
+
+func deterministicAssignedAbility(matchID model.MatchID, player model.PlayerState) model.AbilityType {
+	eligible := abilities.AbilitiesForPlayer(player)
+	if len(eligible) == 0 {
+		return ""
+	}
+
+	hasher := fnv.New64a()
+	_, _ = hasher.Write([]byte(matchID))
+	_, _ = hasher.Write([]byte(player.ID))
+	_, _ = hasher.Write([]byte(player.Role))
+	choice := hasher.Sum64() % uint64(len(eligible))
+	return eligible[choice]
+}
+
 func setPlayerConnectedLocked(session *matchSession, playerID model.PlayerID, connected bool) bool {
 	if session == nil || playerID == "" {
 		return false
@@ -1018,36 +1044,94 @@ func assignCellsLocked(session *matchSession) {
 		return players[i].ID < players[j].ID
 	})
 
+	prisonerSpawnIndex := 0
+	deputySpawnIndex := 0
 	for idx, player := range players {
-		player.CurrentRoomID = gamemap.RoomCellBlockA
 		player.LockedInCell = 0
 		player.Velocity = model.Vector2{}
-		player.Position = spawnPositionForPlayerIndex(idx)
+		player.AssignedCell = 0
 
 		if idx >= len(session.gameState.Map.Cells) {
-			player.AssignedCell = 0
+			// Keep role-based spawn behavior even when player count exceeds seeded cell count.
+			switch player.Role {
+			case model.RoleWarden:
+				player.CurrentRoomID = gamemap.RoomWardenHQ
+				player.Position = spawnPositionInRoom(gamemap.RoomWardenHQ, 0)
+			case model.RoleDeputy:
+				player.CurrentRoomID = gamemap.RoomAmmoRoom
+				player.Position = spawnPositionInRoom(gamemap.RoomAmmoRoom, deputySpawnIndex)
+				deputySpawnIndex++
+			default:
+				player.CurrentRoomID = gamemap.RoomCellBlockA
+				player.Position = spawnPositionForPlayerIndex(prisonerSpawnIndex)
+				prisonerSpawnIndex++
+			}
 			continue
 		}
 
 		cell := &session.gameState.Map.Cells[idx]
 		cell.OwnerPlayerID = player.ID
 		cell.OccupantPlayerIDs = []model.PlayerID{player.ID}
-
 		player.AssignedCell = cell.ID
+
+		switch player.Role {
+		case model.RoleWarden:
+			player.CurrentRoomID = gamemap.RoomWardenHQ
+			player.Position = spawnPositionInRoom(gamemap.RoomWardenHQ, 0)
+		case model.RoleDeputy:
+			player.CurrentRoomID = gamemap.RoomAmmoRoom
+			player.Position = spawnPositionInRoom(gamemap.RoomAmmoRoom, deputySpawnIndex)
+			deputySpawnIndex++
+		default:
+			player.CurrentRoomID = gamemap.RoomCellBlockA
+			player.Position = spawnPositionForPlayerIndex(prisonerSpawnIndex)
+			prisonerSpawnIndex++
+		}
+	}
+}
+
+func spawnPositionInRoom(roomID model.RoomID, index int) model.Vector2 {
+	if index < 0 {
+		index = 0
+	}
+
+	room, exists := defaultMatchLayout.Room(roomID)
+	if !exists {
+		return spawnPositionForPlayerIndex(index)
+	}
+
+	switch roomID {
+	case gamemap.RoomWardenHQ:
+		return spawnPositionAtRoomFraction(room, 0.5, 0.5)
+	case gamemap.RoomAmmoRoom:
+		spawns := [][2]float32{
+			{0.22, 0.22},
+			{0.78, 0.22},
+			{0.22, 0.78},
+			{0.78, 0.78},
+			{0.50, 0.38},
+			{0.50, 0.62},
+		}
+		fraction := spawns[index%len(spawns)]
+		return spawnPositionAtRoomFraction(room, fraction[0], fraction[1])
+	default:
+		return spawnPositionForPlayerIndex(index)
 	}
 }
 
 func spawnPositionForPlayerIndex(index int) model.Vector2 {
-	const (
-		minX = 2
-		minY = 13
-		maxX = 7
-		maxY = 19
-	)
+	room, exists := defaultMatchLayout.Room(gamemap.RoomCellBlockA)
+	if !exists {
+		return model.Vector2{X: 2, Y: 13}
+	}
+	minX := room.Min.X
+	minY := room.Min.Y
+	maxX := room.Max.X
+	maxY := room.Max.Y
 
 	width := (maxX - minX) + 1
 	if width <= 0 {
-		return model.Vector2{X: minX, Y: minY}
+		return model.Vector2{X: float32(minX), Y: float32(minY)}
 	}
 
 	column := index % width
@@ -1061,6 +1145,40 @@ func spawnPositionForPlayerIndex(index int) model.Vector2 {
 		X: float32(minX + column),
 		Y: float32(y),
 	}
+}
+
+func spawnPositionAtRoomFraction(room gamemap.Room, fractionX float32, fractionY float32) model.Vector2 {
+	if fractionX < 0 {
+		fractionX = 0
+	}
+	if fractionX > 1 {
+		fractionX = 1
+	}
+	if fractionY < 0 {
+		fractionY = 0
+	}
+	if fractionY > 1 {
+		fractionY = 1
+	}
+
+	width := room.Max.X - room.Min.X
+	height := room.Max.Y - room.Min.Y
+	x := room.Min.X + int(float32(width)*fractionX+0.5)
+	y := room.Min.Y + int(float32(height)*fractionY+0.5)
+	if x < room.Min.X {
+		x = room.Min.X
+	}
+	if x > room.Max.X {
+		x = room.Max.X
+	}
+	if y < room.Min.Y {
+		y = room.Min.Y
+	}
+	if y > room.Max.Y {
+		y = room.Max.Y
+	}
+
+	return model.Vector2{X: float32(x), Y: float32(y)}
 }
 
 func applyInputsToGameStateLocked(session *matchSession, commands []model.InputCommand) tickMutations {
@@ -1817,12 +1935,26 @@ func applyAbilityCommandLocked(
 	if session == nil || player == nil {
 		return false
 	}
-	if !abilities.IsKnownAbility(payload.Ability) || !abilities.CanPlayerUse(*player, payload.Ability) {
-		return false
+
+	if !abilities.IsKnownAbility(payload.Ability) {
+		return denyAbilityUseLocked(session, player, changedPlayers, "unknown ability")
 	}
-	if !canUseAbilityAtCurrentTick(session, *player, payload.Ability) {
-		return false
+	if player.AssignedAbility != "" && payload.Ability != player.AssignedAbility {
+		return denyAbilityUseLocked(
+			session,
+			player,
+			changedPlayers,
+			fmt.Sprintf("you are assigned %s this match", player.AssignedAbility),
+		)
 	}
+	if !abilities.CanPlayerUse(*player, payload.Ability) {
+		return denyAbilityUseLocked(session, player, changedPlayers, "your role cannot use this ability")
+	}
+	if allowed, reason := canUseAbilityAtCurrentTick(session, *player, payload.Ability); !allowed {
+		return denyAbilityUseLocked(session, player, changedPlayers, reason)
+	}
+
+	payload = resolveAbilityTargetsForContextLocked(session, *player, payload)
 
 	applied := false
 	feedbackKind := model.ActionFeedbackKindSystem
@@ -1831,27 +1963,34 @@ func applyAbilityCommandLocked(
 	switch payload.Ability {
 	case model.AbilityAlarm:
 		durationTicks := prison.AlarmDurationTicks(session.tickRateHz)
-		if durationTicks > 0 {
-			session.gameState.Map.Alarm = model.AlarmState{
-				Active:      true,
-				EndsTick:    session.tickID + durationTicks,
-				TriggeredBy: player.ID,
-			}
-			applied = true
-			feedbackKind = model.ActionFeedbackKindAlarm
-			feedbackLevel = model.ActionFeedbackLevelSuccess
-			feedbackMessage = fmt.Sprintf("Alarm triggered (%dt).", durationTicks)
+		if durationTicks == 0 {
+			return denyAbilityUseLocked(session, player, changedPlayers, "alarm duration is unavailable")
 		}
+		session.gameState.Map.Alarm = model.AlarmState{
+			Active:      true,
+			EndsTick:    session.tickID + durationTicks,
+			TriggeredBy: player.ID,
+		}
+		applied = true
+		feedbackKind = model.ActionFeedbackKindAlarm
+		feedbackLevel = model.ActionFeedbackLevelSuccess
+		feedbackMessage = fmt.Sprintf("Alarm triggered (%dt).", durationTicks)
 
 	case model.AbilitySearch:
 		targetID := payload.TargetPlayerID
 		targetIndex, exists := playerIndex[targetID]
-		if !exists || targetID == "" || targetID == player.ID {
-			return false
+		if !exists || targetID == "" {
+			return denyAbilityUseLocked(session, player, changedPlayers, "stand in the same room as a living target to search")
+		}
+		if targetID == player.ID {
+			return denyAbilityUseLocked(session, player, changedPlayers, "you cannot search yourself")
 		}
 		target := &session.gameState.Players[targetIndex]
-		if !target.Alive || target.CurrentRoomID == "" || target.CurrentRoomID != player.CurrentRoomID {
-			return false
+		if !target.Alive {
+			return denyAbilityUseLocked(session, player, changedPlayers, "target is already down")
+		}
+		if target.CurrentRoomID == "" || target.CurrentRoomID != player.CurrentRoomID {
+			return denyAbilityUseLocked(session, player, changedPlayers, "search requires target in your current room")
 		}
 
 		confiscated := false
@@ -1874,16 +2013,23 @@ func applyAbilityCommandLocked(
 				changedPlayers[target.ID] = struct{}{}
 			}
 		}
+		if !confiscated {
+			return denyAbilityUseLocked(session, player, changedPlayers, "target has no contraband to confiscate")
+		}
 
 	case model.AbilityCameraMan:
-		if player.CurrentRoomID != gamemap.RoomCameraRoom || !session.gameState.Map.PowerOn {
-			return false
+		if player.CurrentRoomID != gamemap.RoomCameraRoom {
+			return denyAbilityUseLocked(session, player, changedPlayers, "go to the camera room")
+		}
+		if !session.gameState.Map.PowerOn {
+			return denyAbilityUseLocked(session, player, changedPlayers, "restore power before using cameras")
 		}
 		duration := abilities.EffectDurationTicks(model.AbilityCameraMan, session.tickRateHz)
 		if duration == 0 {
-			return false
+			return denyAbilityUseLocked(session, player, changedPlayers, "camera system cooldown is unavailable")
 		}
 		trackedCount := 0
+		applied = true
 		for index := range session.gameState.Players {
 			target := &session.gameState.Players[index]
 			if !target.Alive || !gamemap.IsPrisonerPlayer(*target) {
@@ -1898,24 +2044,28 @@ func applyAbilityCommandLocked(
 				trackedCount++
 			}
 		}
-		if applied {
-			feedbackMessage = fmt.Sprintf("Camera sweep marked %d restricted prisoner(s).", trackedCount)
-		}
+		feedbackMessage = fmt.Sprintf("Camera sweep marked %d restricted prisoner(s).", trackedCount)
 
 	case model.AbilityDetainer:
 		targetID := payload.TargetPlayerID
 		targetIndex, exists := playerIndex[targetID]
-		if !exists || targetID == "" || targetID == player.ID {
-			return false
+		if !exists || targetID == "" {
+			return denyAbilityUseLocked(session, player, changedPlayers, "stand in the same room as a living target to detain")
+		}
+		if targetID == player.ID {
+			return denyAbilityUseLocked(session, player, changedPlayers, "you cannot detain yourself")
 		}
 		target := &session.gameState.Players[targetIndex]
-		if !target.Alive || target.CurrentRoomID == "" || target.CurrentRoomID != player.CurrentRoomID {
-			return false
+		if !target.Alive {
+			return denyAbilityUseLocked(session, player, changedPlayers, "target is already down")
+		}
+		if target.CurrentRoomID == "" || target.CurrentRoomID != player.CurrentRoomID {
+			return denyAbilityUseLocked(session, player, changedPlayers, "detainer requires target in your current room")
 		}
 
 		duration := abilities.EffectDurationTicks(model.AbilityDetainer, session.tickRateHz)
 		if duration == 0 {
-			return false
+			return denyAbilityUseLocked(session, player, changedPlayers, "detainer duration is unavailable")
 		}
 		untilTick := session.tickID + duration
 		changed := false
@@ -1942,20 +2092,26 @@ func applyAbilityCommandLocked(
 				changedPlayers[target.ID] = struct{}{}
 			}
 		}
+		if !changed {
+			return denyAbilityUseLocked(session, player, changedPlayers, "target is already fully detained")
+		}
 
 	case model.AbilityTracker:
 		targetID := payload.TargetPlayerID
 		targetIndex, exists := playerIndex[targetID]
-		if !exists || targetID == "" || targetID == player.ID {
-			return false
+		if !exists || targetID == "" {
+			return denyAbilityUseLocked(session, player, changedPlayers, "choose a living target to track")
+		}
+		if targetID == player.ID {
+			return denyAbilityUseLocked(session, player, changedPlayers, "you cannot track yourself")
 		}
 		target := &session.gameState.Players[targetIndex]
 		if !target.Alive {
-			return false
+			return denyAbilityUseLocked(session, player, changedPlayers, "target is already down")
 		}
 		duration := abilities.EffectDurationTicks(model.AbilityTracker, session.tickRateHz)
 		if duration == 0 {
-			return false
+			return denyAbilityUseLocked(session, player, changedPlayers, "tracker duration is unavailable")
 		}
 		if upsertEffectLocked(target, model.EffectTracked, session.tickID+duration, player.ID, 0, 1) {
 			changedPlayers[target.ID] = struct{}{}
@@ -1971,16 +2127,25 @@ func applyAbilityCommandLocked(
 				changedPlayers[target.ID] = struct{}{}
 			}
 		}
+		if !applied {
+			return denyAbilityUseLocked(session, player, changedPlayers, "target is already being tracked")
+		}
 
 	case model.AbilityPickPocket:
 		targetID := payload.TargetPlayerID
 		targetIndex, exists := playerIndex[targetID]
-		if !exists || targetID == "" || targetID == player.ID {
-			return false
+		if !exists || targetID == "" {
+			return denyAbilityUseLocked(session, player, changedPlayers, "stand in the same room as a living target to pick-pocket")
+		}
+		if targetID == player.ID {
+			return denyAbilityUseLocked(session, player, changedPlayers, "you cannot pick-pocket yourself")
 		}
 		target := &session.gameState.Players[targetIndex]
-		if !target.Alive || target.CurrentRoomID == "" || target.CurrentRoomID != player.CurrentRoomID {
-			return false
+		if !target.Alive {
+			return denyAbilityUseLocked(session, player, changedPlayers, "target is already down")
+		}
+		if target.CurrentRoomID == "" || target.CurrentRoomID != player.CurrentRoomID {
+			return denyAbilityUseLocked(session, player, changedPlayers, "pick-pocket requires target in your current room")
 		}
 		if transferFirstStackQuantityLocked(target, player, 1) {
 			changedPlayers[target.ID] = struct{}{}
@@ -1996,11 +2161,14 @@ func applyAbilityCommandLocked(
 				changedPlayers[target.ID] = struct{}{}
 			}
 		}
+		if !applied {
+			return denyAbilityUseLocked(session, player, changedPlayers, "target has no stealable items")
+		}
 
 	case model.AbilityHacker:
 		nextPower := !session.gameState.Map.PowerOn
 		if !prison.ApplyPowerState(&session.gameState.Map, nextPower) {
-			return false
+			return denyAbilityUseLocked(session, player, changedPlayers, "power controls are unavailable")
 		}
 		for _, door := range session.gameState.Map.Doors {
 			changedDoors[door.ID] = struct{}{}
@@ -2016,16 +2184,21 @@ func applyAbilityCommandLocked(
 	case model.AbilityDisguise:
 		duration := abilities.EffectDurationTicks(model.AbilityDisguise, session.tickRateHz)
 		if duration == 0 {
-			return false
+			return denyAbilityUseLocked(session, player, changedPlayers, "disguise duration is unavailable")
 		}
 		applied = upsertEffectLocked(player, model.EffectDisguised, session.tickID+duration, player.ID, 0, 1)
 		if applied {
 			feedbackMessage = fmt.Sprintf("Disguise active for %dt.", duration)
+		} else {
+			return denyAbilityUseLocked(session, player, changedPlayers, "disguise is already active")
 		}
 
 	case model.AbilityLocksmith:
+		if !session.gameState.Map.PowerOn {
+			return denyAbilityUseLocked(session, player, changedPlayers, "power must be on to use locksmith")
+		}
 		if payload.TargetDoorID == 0 {
-			return false
+			return denyAbilityUseLocked(session, player, changedPlayers, "stand by an accessible door")
 		}
 		doorIndex := -1
 		for index := range session.gameState.Map.Doors {
@@ -2034,8 +2207,8 @@ func applyAbilityCommandLocked(
 				break
 			}
 		}
-		if doorIndex < 0 || !session.gameState.Map.PowerOn {
-			return false
+		if doorIndex < 0 {
+			return denyAbilityUseLocked(session, player, changedPlayers, "target door no longer exists")
 		}
 		door := &session.gameState.Map.Doors[doorIndex]
 		changed := false
@@ -2052,30 +2225,181 @@ func applyAbilityCommandLocked(
 			applied = true
 			feedbackKind = model.ActionFeedbackKindDoor
 			feedbackMessage = fmt.Sprintf("Locksmith opened door %d.", door.ID)
+		} else {
+			return denyAbilityUseLocked(session, player, changedPlayers, "target door is already unlocked and open")
 		}
 
 	case model.AbilityChameleon:
 		duration := abilities.EffectDurationTicks(model.AbilityChameleon, session.tickRateHz)
 		if duration == 0 {
-			return false
+			return denyAbilityUseLocked(session, player, changedPlayers, "chameleon duration is unavailable")
 		}
 		applied = upsertEffectLocked(player, model.EffectChameleon, session.tickID+duration, player.ID, 0, 1)
 		if applied {
 			feedbackMessage = fmt.Sprintf("Chameleon active for %dt.", duration)
+		} else {
+			return denyAbilityUseLocked(session, player, changedPlayers, "chameleon is already active")
 		}
 
 	default:
-		return false
+		return denyAbilityUseLocked(session, player, changedPlayers, "ability is not implemented")
 	}
 
 	if !applied {
-		return false
+		return denyAbilityUseLocked(session, player, changedPlayers, "ability had no effect")
 	}
 	registerAbilityUseLocked(session, *player, payload.Ability)
 	if applyActionFeedbackLocked(player, feedbackKind, feedbackLevel, feedbackMessage, session.tickID) {
 		changedPlayers[player.ID] = struct{}{}
 	}
 	return true
+}
+
+func denyAbilityUseLocked(
+	session *matchSession,
+	player *model.PlayerState,
+	changedPlayers map[model.PlayerID]struct{},
+	reason string,
+) bool {
+	if session == nil || player == nil {
+		return false
+	}
+
+	trimmed := strings.TrimSpace(reason)
+	if trimmed == "" {
+		trimmed = "that action is unavailable right now"
+	}
+	message := fmt.Sprintf("can't use that here: %s", trimmed)
+	if !strings.HasSuffix(message, ".") {
+		message += "."
+	}
+	if applyActionFeedbackLocked(
+		player,
+		model.ActionFeedbackKindSystem,
+		model.ActionFeedbackLevelWarning,
+		message,
+		session.tickID,
+	) {
+		if changedPlayers != nil {
+			changedPlayers[player.ID] = struct{}{}
+		}
+		return true
+	}
+	return false
+}
+
+func resolveAbilityTargetsForContextLocked(
+	session *matchSession,
+	player model.PlayerState,
+	payload model.AbilityUsePayload,
+) model.AbilityUsePayload {
+	if session == nil {
+		return payload
+	}
+
+	resolved := payload
+	switch payload.Ability {
+	case model.AbilitySearch, model.AbilityDetainer, model.AbilityPickPocket:
+		if resolved.TargetPlayerID == "" {
+			resolved.TargetPlayerID = nearestPlayerTargetLocked(player, session.gameState.Players, true)
+		}
+	case model.AbilityTracker:
+		if resolved.TargetPlayerID == "" {
+			resolved.TargetPlayerID = nearestPlayerTargetLocked(player, session.gameState.Players, false)
+		}
+	case model.AbilityLocksmith:
+		if resolved.TargetDoorID == 0 {
+			resolved.TargetDoorID = firstReachableDoorForPlayerLocked(player, session.gameState.Map)
+		}
+	}
+
+	return resolved
+}
+
+func nearestPlayerTargetLocked(
+	actor model.PlayerState,
+	players []model.PlayerState,
+	requireSameRoom bool,
+) model.PlayerID {
+	var bestID model.PlayerID
+	bestDistance := float32(0)
+
+	for _, candidate := range players {
+		if candidate.ID == "" || candidate.ID == actor.ID || !candidate.Alive {
+			continue
+		}
+		if requireSameRoom {
+			if actor.CurrentRoomID == "" || candidate.CurrentRoomID != actor.CurrentRoomID {
+				continue
+			}
+		}
+
+		dx := candidate.Position.X - actor.Position.X
+		dy := candidate.Position.Y - actor.Position.Y
+		distanceSquared := (dx * dx) + (dy * dy)
+		if bestID == "" || distanceSquared < bestDistance || (distanceSquared == bestDistance && candidate.ID < bestID) {
+			bestID = candidate.ID
+			bestDistance = distanceSquared
+		}
+	}
+
+	return bestID
+}
+
+func firstReachableDoorForPlayerLocked(player model.PlayerState, mapState model.MapState) model.DoorID {
+	bestDoorID := model.DoorID(0)
+	for _, door := range mapState.Doors {
+		if door.ID == 0 {
+			continue
+		}
+		if !canPlayerTargetDoorLocked(player, door, mapState) {
+			continue
+		}
+		if bestDoorID == 0 || door.ID < bestDoorID {
+			bestDoorID = door.ID
+		}
+	}
+	return bestDoorID
+}
+
+func canPlayerTargetDoorLocked(player model.PlayerState, door model.DoorState, mapState model.MapState) bool {
+	if player.CurrentRoomID != "" {
+		targetRoomID, adjacent := adjacentTargetRoomForDoor(player.CurrentRoomID, door)
+		if !adjacent {
+			return false
+		}
+		if targetRoomID != "" && !gamemap.CanEnterRoom(player, targetRoomID, mapState) {
+			return false
+		}
+	}
+
+	if cell, exists := cellStateForDoorID(mapState.Cells, door.ID); exists && !gamemap.CanOperateCellDoor(player, cell) {
+		return false
+	}
+	return true
+}
+
+func adjacentTargetRoomForDoor(currentRoomID model.RoomID, door model.DoorState) (model.RoomID, bool) {
+	switch currentRoomID {
+	case door.RoomA:
+		return door.RoomB, true
+	case door.RoomB:
+		return door.RoomA, true
+	default:
+		return "", false
+	}
+}
+
+func cellStateForDoorID(cells []model.CellState, doorID model.DoorID) (model.CellState, bool) {
+	if doorID == 0 {
+		return model.CellState{}, false
+	}
+	for _, cell := range cells {
+		if cell.DoorID == doorID {
+			return cell, true
+		}
+	}
+	return model.CellState{}, false
 }
 
 func applyCardCommandLocked(
@@ -2308,26 +2632,29 @@ func canUseAbilityAtCurrentTick(
 	session *matchSession,
 	player model.PlayerState,
 	ability model.AbilityType,
-) bool {
+) (bool, string) {
 	cooldowns := abilityCooldownMapLocked(session, player.ID)
 	cooldownUntil := cooldowns[ability]
 	if cooldownUntil != 0 && session.tickID < cooldownUntil {
-		return false
+		return false, fmt.Sprintf("%s is on cooldown for %dt", ability, cooldownUntil-session.tickID)
 	}
 
 	if !abilities.OncePerDay(ability) {
-		return true
+		return true, ""
 	}
 	if session.gameState.Phase.Current != model.PhaseDay {
-		return false
+		return false, "this ability is only available during day phase"
 	}
 	dayStart := session.gameState.Phase.StartedTick
 	if dayStart == 0 {
-		return false
+		return false, "day phase has not started yet"
 	}
 
 	usedByDay := abilityUsedDayMapLocked(session, player.ID)
-	return usedByDay[ability] != dayStart
+	if usedByDay[ability] == dayStart {
+		return false, "you already used this ability today"
+	}
+	return true, ""
 }
 
 func registerAbilityUseLocked(
