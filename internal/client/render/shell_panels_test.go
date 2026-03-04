@@ -457,6 +457,35 @@ func TestShellActionPanelMarketInteractBlockedDuringDayShowsReason(t *testing.T)
 	}
 }
 
+func TestShellActionPanelMarketInteractInStaticMarketRoomShowsNightlyLocationHint(t *testing.T) {
+	shell := newShellForActionPanelTest(t, model.PlayerState{
+		ID:            "p1",
+		Name:          "Buyer",
+		Alive:         true,
+		Faction:       model.FactionPrisoner,
+		Role:          model.RoleGangMember,
+		CurrentRoomID: gamemap.RoomBlackMarket,
+	}, nil)
+	setMarketStateForPanelTest(t, shell, model.PhaseNight, gamemap.RoomCourtyard)
+
+	shell.inputSnapshotProvider = func() input.InputSnapshot {
+		return input.InputSnapshot{InteractPressed: true}
+	}
+
+	_ = shell.Update()
+	_ = shell.DrainOutgoingCommands()
+
+	if shell.panelMode != actionPanelNone {
+		t.Fatalf("expected static-room interact mismatch not to open market modal, got mode %d", shell.panelMode)
+	}
+	if !strings.Contains(shell.panelLocalHint, "Courtyard") {
+		t.Fatalf("expected market mismatch hint to include nightly location, got %q", shell.panelLocalHint)
+	}
+	if !strings.Contains(strings.ToLower(shell.panelLocalHint), "interact") {
+		t.Fatalf("expected market mismatch hint to include interact guidance, got %q", shell.panelLocalHint)
+	}
+}
+
 func TestShellActionPanelEscapeUsesArrowSelection(t *testing.T) {
 	shell := newShellForActionPanelTest(t, model.PlayerState{
 		ID:            "p1",

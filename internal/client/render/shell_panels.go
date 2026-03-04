@@ -214,6 +214,16 @@ func (s *Shell) updateActionPanelCommands(
 			s.panelLocalHint = reason
 			s.panelLocalHintWarning = true
 		}
+	} else if interactEdge &&
+		gamemap.IsPrisonerPlayer(*localPlayer) &&
+		localPlayer.CurrentRoomID == gamemap.RoomBlackMarket &&
+		state.Map.BlackMarketRoomID != "" &&
+		state.Map.BlackMarketRoomID != gamemap.RoomBlackMarket {
+		s.panelLocalHint = fmt.Sprintf(
+			"Tonight's black market is in %s. Go there and press Interact (E/F).",
+			roomDisplayLabel(state.Map.BlackMarketRoomID),
+		)
+		s.panelLocalHintWarning = true
 	}
 	if availability.nightCards {
 		s.panelMode = actionPanelNightCards
