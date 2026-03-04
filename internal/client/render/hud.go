@@ -38,12 +38,14 @@ func BuildHUDLinesWithOptions(state model.GameState, localPlayerID model.PlayerI
 	}
 
 	lines := make([]string, 0, 16)
+	phaseCountdown := formatPhaseCountdown(state.TickID, state.Phase, constants.ServerTickRateHz)
 	lines = append(lines, fmt.Sprintf("Match %s  Tick %d  Status %s", state.MatchID, state.TickID, state.Status))
 	lines = append(
 		lines,
 		fmt.Sprintf(
-			"Phase %s  Cycle %d/%d  Ends@%d",
+			"Phase %s  TimeLeft %s  Cycle %d/%d  Ends@%d",
 			state.Phase.Current,
+			phaseCountdown,
 			state.CycleCount,
 			constants.MaxDayNightCycles,
 			state.Phase.EndsTick,
@@ -117,7 +119,13 @@ func BuildHUDLinesWithOptions(state model.GameState, localPlayerID model.PlayerI
 
 func BuildCompactHUDLines(state model.GameState, localPlayerID model.PlayerID, options HUDOptions) []string {
 	lines := make([]string, 0, 4)
-	phaseLabel := fmt.Sprintf("Phase %s  Cycle %d/%d", state.Phase.Current, state.CycleCount, constants.MaxDayNightCycles)
+	phaseLabel := fmt.Sprintf(
+		"Phase %s  Time %s  Cycle %d/%d",
+		state.Phase.Current,
+		formatPhaseCountdown(state.TickID, state.Phase, constants.ServerTickRateHz),
+		state.CycleCount,
+		constants.MaxDayNightCycles,
+	)
 
 	pingLabel := "Ping --"
 	if options.PingMS >= 0 {
@@ -451,4 +459,19 @@ func playerByID(players []model.PlayerState, playerID model.PlayerID) (model.Pla
 		}
 	}
 	return model.PlayerState{}, false
+}
+
+func formatPhaseCountdown(currentTick uint64, phase model.PhaseState, tickRateHz uint32) string {
+	if tickRateHz == 0 {
+		tickRateHz = 1
+	}
+	if phase.EndsTick <= currentTick {
+		return "00:00"
+	}
+
+	remainingTicks := phase.EndsTick - currentTick
+	remainingSeconds := (remainingTicks + uint64(tickRateHz) - 1) / uint64(tickRateHz)
+	minutes := remainingSeconds / 60
+	seconds := remainingSeconds % 60
+	return fmt.Sprintf("%02d:%02d", minutes, seconds)
 }

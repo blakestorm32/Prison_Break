@@ -57,6 +57,7 @@ func TestBuildHUDLinesIncludesPhaseHealthAmmoAndCooldowns(t *testing.T) {
 
 	joined := strings.Join(lines, " | ")
 	assertContains(t, joined, "Phase night")
+	assertContains(t, joined, "TimeLeft 00:01")
 	assertContains(t, joined, "Health 2.5")
 	assertContains(t, joined, "Ammo 3")
 	assertContains(t, joined, "Objective")
@@ -187,7 +188,8 @@ func TestBuildCompactHUDLinesReturnsMinimalOverlay(t *testing.T) {
 		Status:     model.MatchStatusRunning,
 		CycleCount: 2,
 		Phase: model.PhaseState{
-			Current: model.PhaseNight,
+			Current:  model.PhaseNight,
+			EndsTick: 125,
 		},
 		Players: []model.PlayerState{
 			{
@@ -205,6 +207,7 @@ func TestBuildCompactHUDLinesReturnsMinimalOverlay(t *testing.T) {
 	joined := strings.Join(lines, " | ")
 	assertContains(t, joined, "Faction prisoner | Role gang_member")
 	assertContains(t, joined, "Phase night")
+	assertContains(t, joined, "Time 00:04")
 	assertContains(t, joined, "Ping 48ms")
 	assertNotContains(t, joined, "Controls[Desktop]")
 	assertNotContains(t, joined, "Objective")
@@ -219,6 +222,18 @@ func TestFormatHearts(t *testing.T) {
 	}
 	if got := formatHearts(1); got != "0.5" {
 		t.Fatalf("expected 1 half-heart => 0.5, got %s", got)
+	}
+}
+
+func TestFormatPhaseCountdown(t *testing.T) {
+	if got := formatPhaseCountdown(0, model.PhaseState{EndsTick: 300}, 30); got != "00:10" {
+		t.Fatalf("expected 300 ticks at 30hz to format as 00:10, got %s", got)
+	}
+	if got := formatPhaseCountdown(299, model.PhaseState{EndsTick: 300}, 30); got != "00:01" {
+		t.Fatalf("expected final tick window to ceil to 00:01, got %s", got)
+	}
+	if got := formatPhaseCountdown(300, model.PhaseState{EndsTick: 300}, 30); got != "00:00" {
+		t.Fatalf("expected expired countdown to be 00:00, got %s", got)
 	}
 }
 
