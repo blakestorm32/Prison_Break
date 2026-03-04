@@ -113,8 +113,12 @@ type matchSession struct {
 	guardLastShotTick           map[model.PlayerID]uint64
 	abilityCooldownUntil        map[model.PlayerID]map[model.AbilityType]uint64
 	abilityUsedDayStart         map[model.PlayerID]map[model.AbilityType]uint64
+	abilityDailyUsage           map[model.PlayerID]map[model.AbilityType]dailyAbilityUsage
 	lockSnapDoorRestores        map[model.DoorID]lockSnapDoorRestoreState
 	npcPrisonerBribeState       map[model.EntityID]npcPrisonerBribeState
+	npcTaskByPlayer             map[model.PlayerID]npcTaskState
+	chameleonPendingUntil       map[model.PlayerID]uint64
+	lastMoveIntentTick          map[model.PlayerID]uint64
 	replayEntries               []ReplayEntry
 
 	gameState       model.GameState
@@ -144,6 +148,27 @@ type npcPrisonerBribeState struct {
 	Stock     uint8
 	PayerID   model.PlayerID
 	PaidCards uint8
+}
+
+type dailyAbilityUsage struct {
+	DayStartTick uint64
+	UseCount     uint8
+}
+
+type npcTaskType string
+
+const (
+	npcTaskVisitRoom npcTaskType = "visit_room"
+	npcTaskHoldItem  npcTaskType = "hold_item"
+)
+
+type npcTaskState struct {
+	DayStartTick uint64
+	Type         npcTaskType
+	TargetRoomID model.RoomID
+	TargetItem   model.ItemType
+	RewardCards  uint8
+	AssignedBy   model.EntityID
 }
 
 type PersistenceStore interface {
@@ -242,8 +267,12 @@ func (m *Manager) CreateMatch() MatchSnapshot {
 		guardLastShotTick:      make(map[model.PlayerID]uint64),
 		abilityCooldownUntil:   make(map[model.PlayerID]map[model.AbilityType]uint64),
 		abilityUsedDayStart:    make(map[model.PlayerID]map[model.AbilityType]uint64),
+		abilityDailyUsage:      make(map[model.PlayerID]map[model.AbilityType]dailyAbilityUsage),
 		lockSnapDoorRestores:   make(map[model.DoorID]lockSnapDoorRestoreState),
 		npcPrisonerBribeState:  make(map[model.EntityID]npcPrisonerBribeState),
+		npcTaskByPlayer:        make(map[model.PlayerID]npcTaskState),
+		chameleonPendingUntil:  make(map[model.PlayerID]uint64),
+		lastMoveIntentTick:     make(map[model.PlayerID]uint64),
 		replayEntries:          make([]ReplayEntry, 0, 256),
 		snapshotHistory:        make(map[uint64]model.Snapshot),
 	}
@@ -813,14 +842,23 @@ func (m *Manager) runMatchLoop(matchID model.MatchID, loopCtx context.Context, t
 				managerPhaseHooks{},
 			)
 			nightlyEconomyEntityChanges := make([]model.EntityState, 0, 8)
+			phasePlayerChanges := make(map[model.PlayerID]struct{})
 			for _, transition := range phaseTransitions {
 				if transition.To != model.PhaseNight {
+					if transition.To == model.PhaseDay {
+						for _, playerID := range clearNightCardChoicesLocked(session) {
+							phasePlayerChanges[playerID] = struct{}{}
+						}
+					}
 					continue
 				}
 				nightlyEconomyEntityChanges = mergeChangedEntityStates(
 					nightlyEconomyEntityChanges,
 					refreshNPCPrisonerOffersForNightLocked(session, transition.Cycle),
 				)
+				for _, playerID := range assignNightCardOffersForCycleLocked(session, transition.Cycle) {
+					phasePlayerChanges[playerID] = struct{}{}
+				}
 			}
 			outcome := winconditions.Evaluate(session.gameState, winconditions.Config{
 				MaxCycles: m.config.MaxCycles,
@@ -850,8 +888,9 @@ func (m *Manager) runMatchLoop(matchID model.MatchID, loopCtx context.Context, t
 			playerAcks := buildPlayerAcksLocked(session)
 
 			delta := &model.GameDelta{}
-			if len(mutations.players) > 0 {
-				delta.ChangedPlayers = mutations.players
+			changedPlayers := mergeChangedPlayersByIDLocked(session, mutations.players, phasePlayerChanges)
+			if len(changedPlayers) > 0 {
+				delta.ChangedPlayers = changedPlayers
 			}
 			changedEntities := mergeChangedEntityStates(mutations.entities, nightlyEconomyEntityChanges)
 			if len(changedEntities) > 0 {
@@ -1215,6 +1254,27 @@ func applyInputsToGameStateLocked(session *matchSession, commands []model.InputC
 			if err := json.Unmarshal(command.Payload, &payload); err != nil {
 				continue
 			}
+			if payload.MoveX != 0 || payload.MoveY != 0 {
+				if session.lastMoveIntentTick == nil {
+					session.lastMoveIntentTick = make(map[model.PlayerID]uint64)
+				}
+				session.lastMoveIntentTick[player.ID] = session.tickID
+				if session.chameleonPendingUntil != nil {
+					delete(session.chameleonPendingUntil, player.ID)
+				}
+				if removeEffectLocked(player, model.EffectChameleon) {
+					changed[command.PlayerID] = struct{}{}
+					if applyActionFeedbackLocked(
+						player,
+						model.ActionFeedbackKindSystem,
+						model.ActionFeedbackLevelInfo,
+						"Chameleon broken by movement.",
+						session.tickID,
+					) {
+						changed[command.PlayerID] = struct{}{}
+					}
+				}
+			}
 			beforePosition := player.Position
 			beforeVelocity := player.Velocity
 			beforeRoomID := player.CurrentRoomID
@@ -1418,7 +1478,10 @@ func applyInteractCommandLocked(
 		payload.TargetDoorID == 0 &&
 		payload.TargetEntityID == 0 &&
 		payload.EscapeRoute == "" &&
-		payload.MarketRoomID == "" {
+		payload.MarketRoomID == "" &&
+		payload.NightCardChoice == "" &&
+		payload.StashAction == "" &&
+		payload.StashItem == "" {
 		if tryTogglePowerIfEligibleLocked(session, player, changedDoors) {
 			changed = true
 			powerState := "OFF"
@@ -1434,6 +1497,45 @@ func applyInteractCommandLocked(
 			) {
 				changed = true
 			}
+		}
+	}
+
+	if payload.NightCardChoice != "" {
+		selected, reason := trySelectNightCardLocked(session, player, payload.NightCardChoice)
+		level := model.ActionFeedbackLevelWarning
+		if selected {
+			level = model.ActionFeedbackLevelSuccess
+		}
+		if applyActionFeedbackLocked(
+			player,
+			model.ActionFeedbackKindSystem,
+			level,
+			reason,
+			session.tickID,
+		) {
+			changed = true
+		}
+		if selected {
+			changed = true
+		}
+	}
+
+	if payload.StashAction != "" && payload.StashItem != "" {
+		applied, reason, level, changedCellID := applyCellStashInteractLocked(session, *player, payload)
+		if changedCellID != 0 {
+			changedCells[changedCellID] = struct{}{}
+		}
+		if applyActionFeedbackLocked(
+			player,
+			model.ActionFeedbackKindSystem,
+			level,
+			reason,
+			session.tickID,
+		) {
+			changed = true
+		}
+		if applied {
+			changed = true
 		}
 	}
 
@@ -1529,7 +1631,20 @@ func applyInteractCommandLocked(
 		}
 	}
 	if payload.TargetEntityID != 0 {
-		if tryPickupDroppedEntityLocked(session, player, payload.TargetEntityID, changedEntities, removedEntities) {
+		if handledTask, taskChanged, feedback := tryHandleNPCPrisonerTaskInteractLocked(session, player, payload.TargetEntityID); handledTask {
+			if taskChanged {
+				changed = true
+			}
+			if applyActionFeedbackLocked(
+				player,
+				model.ActionFeedbackKindSystem,
+				feedback.Level,
+				feedback.Message,
+				session.tickID,
+			) {
+				changed = true
+			}
+		} else if tryPickupDroppedEntityLocked(session, player, payload.TargetEntityID, changedEntities, removedEntities) {
 			changed = true
 			if applyActionFeedbackLocked(
 				player,
@@ -1591,6 +1706,452 @@ func tryEscapeRouteLocked(
 	player.CurrentRoomID = winconditions.EscapedRoomID
 	player.Velocity = model.Vector2{}
 	return true, "Escape route successful."
+}
+
+type actionFeedbackSummary struct {
+	Message string
+	Level   model.ActionFeedbackLevel
+}
+
+func assignNightCardOffersForCycleLocked(session *matchSession, cycle uint8) []model.PlayerID {
+	if session == nil || len(session.gameState.Players) == 0 {
+		return nil
+	}
+
+	changed := make([]model.PlayerID, 0, len(session.gameState.Players))
+	for index := range session.gameState.Players {
+		player := &session.gameState.Players[index]
+		if !player.Alive {
+			if len(player.NightCardChoices) > 0 {
+				player.NightCardChoices = nil
+				changed = append(changed, player.ID)
+			}
+			continue
+		}
+
+		if len(player.Cards) >= cards.MaxCardsHeld {
+			if len(player.NightCardChoices) > 0 {
+				player.NightCardChoices = nil
+				changed = append(changed, player.ID)
+			}
+			continue
+		}
+
+		next := deterministicNightCardChoices(session.matchID, player.ID, cycle, 3)
+		if equalCardSlices(player.NightCardChoices, next) {
+			continue
+		}
+		player.NightCardChoices = append([]model.CardType(nil), next...)
+		changed = append(changed, player.ID)
+	}
+
+	return changed
+}
+
+func clearNightCardChoicesLocked(session *matchSession) []model.PlayerID {
+	if session == nil || len(session.gameState.Players) == 0 {
+		return nil
+	}
+
+	changed := make([]model.PlayerID, 0, len(session.gameState.Players))
+	for index := range session.gameState.Players {
+		player := &session.gameState.Players[index]
+		if len(player.NightCardChoices) == 0 {
+			continue
+		}
+		player.NightCardChoices = nil
+		changed = append(changed, player.ID)
+	}
+	return changed
+}
+
+func deterministicNightCardChoices(
+	matchID model.MatchID,
+	playerID model.PlayerID,
+	cycle uint8,
+	choiceCount int,
+) []model.CardType {
+	if choiceCount <= 0 {
+		return nil
+	}
+
+	catalog := cards.KnownCards()
+	if len(catalog) == 0 {
+		return nil
+	}
+	if choiceCount > len(catalog) {
+		choiceCount = len(catalog)
+	}
+
+	hasher := fnv.New64a()
+	_, _ = hasher.Write([]byte(matchID))
+	_, _ = hasher.Write([]byte{0})
+	_, _ = hasher.Write([]byte(playerID))
+	_, _ = hasher.Write([]byte{byte(cycle)})
+	seed := hasher.Sum64()
+
+	picked := make(map[model.CardType]struct{}, choiceCount)
+	out := make([]model.CardType, 0, choiceCount)
+	for len(out) < choiceCount {
+		index := int(seed % uint64(len(catalog)))
+		candidate := catalog[index]
+		seed = (seed * 1099511628211) ^ 1469598103934665603
+		if _, exists := picked[candidate]; exists {
+			continue
+		}
+		picked[candidate] = struct{}{}
+		out = append(out, candidate)
+	}
+
+	sort.Slice(out, func(i int, j int) bool {
+		return out[i] < out[j]
+	})
+	return out
+}
+
+func equalCardSlices(left []model.CardType, right []model.CardType) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func trySelectNightCardLocked(
+	session *matchSession,
+	player *model.PlayerState,
+	choice model.CardType,
+) (bool, string) {
+	if session == nil || player == nil || !cards.IsKnownCard(choice) {
+		return false, "Night card selection failed."
+	}
+	if len(player.NightCardChoices) == 0 {
+		return false, "No night card selection is pending."
+	}
+
+	allowed := false
+	for _, candidate := range player.NightCardChoices {
+		if candidate == choice {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return false, "Selected card is not in your night options."
+	}
+	if len(player.Cards) >= cards.MaxCardsHeld {
+		return false, fmt.Sprintf("Card slots are full (%d/%d).", len(player.Cards), cards.MaxCardsHeld)
+	}
+	if !cards.AddCard(player, choice) {
+		return false, "Failed to add selected card."
+	}
+
+	player.NightCardChoices = nil
+	return true, fmt.Sprintf("Night card selected: %s.", choice)
+}
+
+func applyCellStashInteractLocked(
+	session *matchSession,
+	player model.PlayerState,
+	payload model.InteractPayload,
+) (bool, string, model.ActionFeedbackLevel, model.CellID) {
+	if session == nil {
+		return false, "Cell stash unavailable.", model.ActionFeedbackLevelWarning, 0
+	}
+	action := strings.ToLower(strings.TrimSpace(payload.StashAction))
+	if action != "deposit" && action != "withdraw" {
+		return false, "Unknown stash action.", model.ActionFeedbackLevelWarning, 0
+	}
+	if payload.StashItem == "" {
+		return false, "Select an item for stash action.", model.ActionFeedbackLevelWarning, 0
+	}
+	if player.AssignedCell == 0 {
+		return false, "No assigned cell stash.", model.ActionFeedbackLevelWarning, 0
+	}
+	if player.CurrentRoomID != gamemap.RoomCellBlockA {
+		return false, "Go to your cell block to use stash.", model.ActionFeedbackLevelWarning, 0
+	}
+
+	cellIndex := -1
+	for index := range session.gameState.Map.Cells {
+		if session.gameState.Map.Cells[index].ID == player.AssignedCell {
+			cellIndex = index
+			break
+		}
+	}
+	if cellIndex < 0 {
+		return false, "Assigned cell was not found.", model.ActionFeedbackLevelWarning, 0
+	}
+	cell := &session.gameState.Map.Cells[cellIndex]
+	if cell.OwnerPlayerID != player.ID {
+		return false, "Only the cell owner can use this stash.", model.ActionFeedbackLevelWarning, 0
+	}
+
+	playerIndex := -1
+	for index := range session.gameState.Players {
+		if session.gameState.Players[index].ID == player.ID {
+			playerIndex = index
+			break
+		}
+	}
+	if playerIndex < 0 {
+		return false, "Player state unavailable.", model.ActionFeedbackLevelWarning, 0
+	}
+	livePlayer := &session.gameState.Players[playerIndex]
+
+	amount := payload.StashAmount
+	if amount == 0 {
+		amount = 1
+	}
+
+	switch action {
+	case "deposit":
+		if !items.RemoveItem(livePlayer, payload.StashItem, amount) {
+			return false, fmt.Sprintf("Not enough %s to stash.", payload.StashItem), model.ActionFeedbackLevelWarning, 0
+		}
+		stashCarrier := model.PlayerState{Inventory: append([]model.ItemStack(nil), cell.Stash...)}
+		if !items.AddItem(&stashCarrier, payload.StashItem, amount) {
+			_ = items.AddItem(livePlayer, payload.StashItem, amount)
+			return false, "Cell stash is full.", model.ActionFeedbackLevelWarning, 0
+		}
+		cell.Stash = stashCarrier.Inventory
+		return true, fmt.Sprintf("Stashed %s x%d.", payload.StashItem, amount), model.ActionFeedbackLevelSuccess, cell.ID
+
+	case "withdraw":
+		stashCarrier := model.PlayerState{Inventory: append([]model.ItemStack(nil), cell.Stash...)}
+		if !items.RemoveItem(&stashCarrier, payload.StashItem, amount) {
+			return false, fmt.Sprintf("No %s in cell stash.", payload.StashItem), model.ActionFeedbackLevelWarning, 0
+		}
+		if !items.AddItem(livePlayer, payload.StashItem, amount) {
+			_ = items.AddItem(&stashCarrier, payload.StashItem, amount)
+			return false, "Inventory full; cannot withdraw.", model.ActionFeedbackLevelWarning, 0
+		}
+		cell.Stash = stashCarrier.Inventory
+		return true, fmt.Sprintf("Withdrew %s x%d.", payload.StashItem, amount), model.ActionFeedbackLevelSuccess, cell.ID
+	}
+
+	return false, "Stash action failed.", model.ActionFeedbackLevelWarning, 0
+}
+
+func tryHandleNPCPrisonerTaskInteractLocked(
+	session *matchSession,
+	player *model.PlayerState,
+	entityID model.EntityID,
+) (bool, bool, actionFeedbackSummary) {
+	if session == nil || player == nil || entityID == 0 {
+		return false, false, actionFeedbackSummary{}
+	}
+	if !player.Alive || !gamemap.IsPrisonerPlayer(*player) {
+		return false, false, actionFeedbackSummary{}
+	}
+
+	entityIndex, exists := findEntityIndexByID(session.gameState.Entities, entityID)
+	if !exists {
+		return false, false, actionFeedbackSummary{}
+	}
+	entity := session.gameState.Entities[entityIndex]
+	if !entity.Active || entity.Kind != model.EntityKindNPCPrisoner {
+		return false, false, actionFeedbackSummary{}
+	}
+	if entity.RoomID == "" || player.CurrentRoomID == "" || entity.RoomID != player.CurrentRoomID {
+		return false, false, actionFeedbackSummary{}
+	}
+
+	if session.gameState.Phase.Current != model.PhaseDay {
+		return true, false, actionFeedbackSummary{
+			Message: "NPC tasks can only be managed during day phase.",
+			Level:   model.ActionFeedbackLevelWarning,
+		}
+	}
+	dayStart := session.gameState.Phase.StartedTick
+	if dayStart == 0 {
+		return true, false, actionFeedbackSummary{
+			Message: "Task board unavailable until day starts.",
+			Level:   model.ActionFeedbackLevelWarning,
+		}
+	}
+	if session.npcTaskByPlayer == nil {
+		session.npcTaskByPlayer = make(map[model.PlayerID]npcTaskState)
+	}
+
+	task, exists := session.npcTaskByPlayer[player.ID]
+	if !exists || task.DayStartTick != dayStart {
+		task = deterministicNPCTaskForDay(session.matchID, player.ID, dayStart, entity.ID)
+		task.DayStartTick = dayStart
+		task.AssignedBy = entity.ID
+		if task.RewardCards == 0 {
+			task.RewardCards = 1
+		}
+		session.npcTaskByPlayer[player.ID] = task
+		return true, false, actionFeedbackSummary{
+			Message: "Task assigned: " + npcTaskDescription(task),
+			Level:   model.ActionFeedbackLevelInfo,
+		}
+	}
+	if task.Type == "" {
+		return true, false, actionFeedbackSummary{
+			Message: "No task assigned this day.",
+			Level:   model.ActionFeedbackLevelInfo,
+		}
+	}
+	if !isNPCTaskComplete(task, *player) {
+		return true, false, actionFeedbackSummary{
+			Message: "Task in progress: " + npcTaskProgress(task, *player),
+			Level:   model.ActionFeedbackLevelInfo,
+		}
+	}
+
+	added := uint8(0)
+	for added < task.RewardCards {
+		if !cards.AddCard(player, model.CardMoney) {
+			break
+		}
+		added++
+	}
+	task.Type = ""
+	task.TargetRoomID = ""
+	task.TargetItem = ""
+	task.RewardCards = 0
+	session.npcTaskByPlayer[player.ID] = task
+	if added == 0 {
+		return true, false, actionFeedbackSummary{
+			Message: "Task complete, but card slots are full. Spend cards and retry.",
+			Level:   model.ActionFeedbackLevelWarning,
+		}
+	}
+	return true, true, actionFeedbackSummary{
+		Message: fmt.Sprintf("Task complete. Earned %d money card(s).", added),
+		Level:   model.ActionFeedbackLevelSuccess,
+	}
+}
+
+func deterministicNPCTaskForDay(
+	matchID model.MatchID,
+	playerID model.PlayerID,
+	dayStartTick uint64,
+	entityID model.EntityID,
+) npcTaskState {
+	visitRooms := append([]model.RoomID(nil), npcPrisonerRooms...)
+	holdItems := []model.ItemType{
+		model.ItemWood,
+		model.ItemMetalSlab,
+		model.ItemLockPick,
+	}
+
+	hasher := fnv.New64a()
+	_, _ = hasher.Write([]byte(matchID))
+	_, _ = hasher.Write([]byte{0})
+	_, _ = hasher.Write([]byte(playerID))
+	var tickBytes [8]byte
+	for index := range tickBytes {
+		tickBytes[index] = byte(dayStartTick >> (uint(index) * 8))
+	}
+	_, _ = hasher.Write(tickBytes[:])
+	entityBytes := []byte{
+		byte(entityID),
+		byte(entityID >> 8),
+		byte(entityID >> 16),
+		byte(entityID >> 24),
+	}
+	_, _ = hasher.Write(entityBytes)
+	seed := hasher.Sum64()
+
+	task := npcTaskState{
+		RewardCards: 1,
+	}
+	if seed%10 < 7 {
+		task.Type = npcTaskVisitRoom
+		task.TargetRoomID = visitRooms[int(seed%uint64(len(visitRooms)))]
+		return task
+	}
+
+	task.Type = npcTaskHoldItem
+	task.TargetItem = holdItems[int(seed%uint64(len(holdItems)))]
+	return task
+}
+
+func npcTaskDescription(task npcTaskState) string {
+	switch task.Type {
+	case npcTaskVisitRoom:
+		if task.TargetRoomID == "" {
+			return "Visit the requested location."
+		}
+		return fmt.Sprintf("Go to %s, then interact with an NPC prisoner for reward.", roomLabelForFeedback(task.TargetRoomID))
+	case npcTaskHoldItem:
+		if task.TargetItem == "" {
+			return "Bring a requested item."
+		}
+		return fmt.Sprintf("Bring %s in inventory, then interact with an NPC prisoner.", task.TargetItem)
+	default:
+		return "No active task."
+	}
+}
+
+func npcTaskProgress(task npcTaskState, player model.PlayerState) string {
+	switch task.Type {
+	case npcTaskVisitRoom:
+		if task.TargetRoomID == "" {
+			return "Visit the assigned room."
+		}
+		if player.CurrentRoomID == task.TargetRoomID {
+			return "Return to an NPC prisoner to claim reward."
+		}
+		return fmt.Sprintf("Go to %s.", roomLabelForFeedback(task.TargetRoomID))
+	case npcTaskHoldItem:
+		if task.TargetItem == "" {
+			return "Hold the requested item."
+		}
+		if items.HasItem(player, task.TargetItem, 1) {
+			return "Return to an NPC prisoner to claim reward."
+		}
+		return fmt.Sprintf("Carry %s x1 in inventory.", task.TargetItem)
+	default:
+		return "No active task."
+	}
+}
+
+func isNPCTaskComplete(task npcTaskState, player model.PlayerState) bool {
+	switch task.Type {
+	case npcTaskVisitRoom:
+		return task.TargetRoomID != "" && player.CurrentRoomID == task.TargetRoomID
+	case npcTaskHoldItem:
+		return task.TargetItem != "" && items.HasItem(player, task.TargetItem, 1)
+	default:
+		return false
+	}
+}
+
+func roomLabelForFeedback(roomID model.RoomID) string {
+	switch roomID {
+	case gamemap.RoomCorridorMain:
+		return "Main Corridor"
+	case gamemap.RoomCellBlockA:
+		return "Cell Block A"
+	case gamemap.RoomWardenHQ:
+		return "Warden HQ"
+	case gamemap.RoomCameraRoom:
+		return "Camera Room"
+	case gamemap.RoomPowerRoom:
+		return "Power Room"
+	case gamemap.RoomAmmoRoom:
+		return "Ammo Room"
+	case gamemap.RoomBlackMarket:
+		return "Black Market"
+	case gamemap.RoomCafeteria:
+		return "Cafeteria"
+	case gamemap.RoomMailRoom:
+		return "Mail Room"
+	case gamemap.RoomCourtyard:
+		return "Courtyard"
+	case gamemap.RoomRoofLookout:
+		return "Roof Lookout"
+	default:
+		return strings.ReplaceAll(string(roomID), "_", " ")
+	}
 }
 
 func applyActionFeedbackLocked(
@@ -1993,16 +2554,22 @@ func applyAbilityCommandLocked(
 			return denyAbilityUseLocked(session, player, changedPlayers, "search requires target in your current room")
 		}
 
-		confiscated := false
+		inventorySummary := summarizeInventoryForFeedback(target.Inventory)
+		confiscated := make([]string, 0, 4)
 		for _, contraband := range items.ContrabandStacks(*target) {
 			if items.RemoveItem(target, contraband.Item, contraband.Quantity) {
-				confiscated = true
+				confiscated = append(confiscated, fmt.Sprintf("%s x%d", contraband.Item, contraband.Quantity))
 			}
 		}
-		if confiscated {
+		applied = true
+		if len(confiscated) > 0 {
 			changedPlayers[target.ID] = struct{}{}
-			applied = true
-			feedbackMessage = fmt.Sprintf("Search confiscated contraband from %s.", target.Name)
+			feedbackMessage = fmt.Sprintf(
+				"Search report on %s: inv=%s | confiscated=%s.",
+				target.Name,
+				inventorySummary,
+				strings.Join(confiscated, ", "),
+			)
 			if applyActionFeedbackLocked(
 				target,
 				model.ActionFeedbackKindSystem,
@@ -2012,9 +2579,17 @@ func applyAbilityCommandLocked(
 			) {
 				changedPlayers[target.ID] = struct{}{}
 			}
-		}
-		if !confiscated {
-			return denyAbilityUseLocked(session, player, changedPlayers, "target has no contraband to confiscate")
+		} else {
+			feedbackMessage = fmt.Sprintf("Search report on %s: inv=%s.", target.Name, inventorySummary)
+			if applyActionFeedbackLocked(
+				target,
+				model.ActionFeedbackKindSystem,
+				model.ActionFeedbackLevelInfo,
+				fmt.Sprintf("Searched by %s.", player.Name),
+				session.tickID,
+			) {
+				changedPlayers[target.ID] = struct{}{}
+			}
 		}
 
 	case model.AbilityCameraMan:
@@ -2028,23 +2603,12 @@ func applyAbilityCommandLocked(
 		if duration == 0 {
 			return denyAbilityUseLocked(session, player, changedPlayers, "camera system cooldown is unavailable")
 		}
-		trackedCount := 0
-		applied = true
-		for index := range session.gameState.Players {
-			target := &session.gameState.Players[index]
-			if !target.Alive || !gamemap.IsPrisonerPlayer(*target) {
-				continue
-			}
-			if !prison.IsRestrictedRoom(target.CurrentRoomID, session.gameState.Map) {
-				continue
-			}
-			if upsertEffectLocked(target, model.EffectTracked, session.tickID+duration, player.ID, 0, 1) {
-				changedPlayers[target.ID] = struct{}{}
-				applied = true
-				trackedCount++
-			}
+		if upsertEffectLocked(player, model.EffectCameraView, session.tickID+duration, player.ID, 0, 1) {
+			applied = true
+			feedbackMessage = fmt.Sprintf("Camera feed active for %dt.", duration)
+		} else {
+			return denyAbilityUseLocked(session, player, changedPlayers, "camera feed is already active")
 		}
-		feedbackMessage = fmt.Sprintf("Camera sweep marked %d restricted prisoner(s).", trackedCount)
 
 	case model.AbilityDetainer:
 		targetID := payload.TargetPlayerID
@@ -2097,38 +2661,15 @@ func applyAbilityCommandLocked(
 		}
 
 	case model.AbilityTracker:
-		targetID := payload.TargetPlayerID
-		targetIndex, exists := playerIndex[targetID]
-		if !exists || targetID == "" {
-			return denyAbilityUseLocked(session, player, changedPlayers, "choose a living target to track")
-		}
-		if targetID == player.ID {
-			return denyAbilityUseLocked(session, player, changedPlayers, "you cannot track yourself")
-		}
-		target := &session.gameState.Players[targetIndex]
-		if !target.Alive {
-			return denyAbilityUseLocked(session, player, changedPlayers, "target is already down")
-		}
 		duration := abilities.EffectDurationTicks(model.AbilityTracker, session.tickRateHz)
 		if duration == 0 {
 			return denyAbilityUseLocked(session, player, changedPlayers, "tracker duration is unavailable")
 		}
-		if upsertEffectLocked(target, model.EffectTracked, session.tickID+duration, player.ID, 0, 1) {
-			changedPlayers[target.ID] = struct{}{}
+		if upsertEffectLocked(player, model.EffectTrackerView, session.tickID+duration, player.ID, 0, 1) {
 			applied = true
-			feedbackMessage = fmt.Sprintf("Tracking placed on %s.", target.Name)
-			if applyActionFeedbackLocked(
-				target,
-				model.ActionFeedbackKindSystem,
-				model.ActionFeedbackLevelWarning,
-				fmt.Sprintf("You are tracked by %s.", player.Name),
-				session.tickID,
-			) {
-				changedPlayers[target.ID] = struct{}{}
-			}
-		}
-		if !applied {
-			return denyAbilityUseLocked(session, player, changedPlayers, "target is already being tracked")
+			feedbackMessage = fmt.Sprintf("Tracker view active for %dt.", duration)
+		} else {
+			return denyAbilityUseLocked(session, player, changedPlayers, "tracker view is already active")
 		}
 
 	case model.AbilityPickPocket:
@@ -2147,10 +2688,14 @@ func applyAbilityCommandLocked(
 		if target.CurrentRoomID == "" || target.CurrentRoomID != player.CurrentRoomID {
 			return denyAbilityUseLocked(session, player, changedPlayers, "pick-pocket requires target in your current room")
 		}
-		if transferFirstStackQuantityLocked(target, player, 1) {
+		item := cards.DeterministicGrabFromInventory(player.ID, target.ID, session.tickID, target.Inventory)
+		if item == "" {
+			return denyAbilityUseLocked(session, player, changedPlayers, "target has no stealable items")
+		}
+		if items.TransferItem(target, player, item, 1) {
 			changedPlayers[target.ID] = struct{}{}
 			applied = true
-			feedbackMessage = fmt.Sprintf("Pick-pocket stole 1 item from %s.", target.Name)
+			feedbackMessage = fmt.Sprintf("Pick-pocket stole %s from %s.", item, target.Name)
 			if applyActionFeedbackLocked(
 				target,
 				model.ActionFeedbackKindSystem,
@@ -2162,12 +2707,14 @@ func applyAbilityCommandLocked(
 			}
 		}
 		if !applied {
-			return denyAbilityUseLocked(session, player, changedPlayers, "target has no stealable items")
+			return denyAbilityUseLocked(session, player, changedPlayers, "pick-pocket failed")
 		}
 
 	case model.AbilityHacker:
-		nextPower := !session.gameState.Map.PowerOn
-		if !prison.ApplyPowerState(&session.gameState.Map, nextPower) {
+		if !session.gameState.Map.PowerOn {
+			return denyAbilityUseLocked(session, player, changedPlayers, "power is already off")
+		}
+		if !prison.ApplyPowerState(&session.gameState.Map, false) {
 			return denyAbilityUseLocked(session, player, changedPlayers, "power controls are unavailable")
 		}
 		for _, door := range session.gameState.Map.Doors {
@@ -2175,11 +2722,7 @@ func applyAbilityCommandLocked(
 		}
 		applied = true
 		feedbackKind = model.ActionFeedbackKindDoor
-		powerState := "OFF"
-		if session.gameState.Map.PowerOn {
-			powerState = "ON"
-		}
-		feedbackMessage = fmt.Sprintf("Hacker toggled power %s.", powerState)
+		feedbackMessage = "Hacker cut power OFF."
 
 	case model.AbilityDisguise:
 		duration := abilities.EffectDurationTicks(model.AbilityDisguise, session.tickRateHz)
@@ -2230,16 +2773,22 @@ func applyAbilityCommandLocked(
 		}
 
 	case model.AbilityChameleon:
-		duration := abilities.EffectDurationTicks(model.AbilityChameleon, session.tickRateHz)
-		if duration == 0 {
-			return denyAbilityUseLocked(session, player, changedPlayers, "chameleon duration is unavailable")
+		if hasActiveEffect(*player, model.EffectChameleon, session.tickID) {
+			return denyAbilityUseLocked(session, player, changedPlayers, "you are already hidden; move to reveal")
 		}
-		applied = upsertEffectLocked(player, model.EffectChameleon, session.tickID+duration, player.ID, 0, 1)
-		if applied {
-			feedbackMessage = fmt.Sprintf("Chameleon active for %dt.", duration)
-		} else {
-			return denyAbilityUseLocked(session, player, changedPlayers, "chameleon is already active")
+		if session.chameleonPendingUntil == nil {
+			session.chameleonPendingUntil = make(map[model.PlayerID]uint64)
 		}
+		if pending := session.chameleonPendingUntil[player.ID]; pending != 0 && session.tickID < pending {
+			return denyAbilityUseLocked(session, player, changedPlayers, "chameleon is already primed")
+		}
+		pendingTicks := uint64(session.tickRateHz) * 5
+		if pendingTicks == 0 {
+			pendingTicks = 5
+		}
+		session.chameleonPendingUntil[player.ID] = session.tickID + pendingTicks
+		applied = true
+		feedbackMessage = "Stay still for 5s to trigger chameleon invisibility."
 
 	default:
 		return denyAbilityUseLocked(session, player, changedPlayers, "ability is not implemented")
@@ -2639,7 +3188,8 @@ func canUseAbilityAtCurrentTick(
 		return false, fmt.Sprintf("%s is on cooldown for %dt", ability, cooldownUntil-session.tickID)
 	}
 
-	if !abilities.OncePerDay(ability) {
+	dailyLimit := abilities.DailyUseLimit(ability)
+	if dailyLimit == 0 {
 		return true, ""
 	}
 	if session.gameState.Phase.Current != model.PhaseDay {
@@ -2650,9 +3200,16 @@ func canUseAbilityAtCurrentTick(
 		return false, "day phase has not started yet"
 	}
 
-	usedByDay := abilityUsedDayMapLocked(session, player.ID)
-	if usedByDay[ability] == dayStart {
-		return false, "you already used this ability today"
+	usage := abilityDailyUsageMapLocked(session, player.ID)
+	record := usage[ability]
+	if record.DayStartTick != dayStart {
+		return true, ""
+	}
+	if record.UseCount >= dailyLimit {
+		if dailyLimit == 1 {
+			return false, "you already used this ability today"
+		}
+		return false, fmt.Sprintf("you already used this ability %d/%d times today", record.UseCount, dailyLimit)
 	}
 	return true, ""
 }
@@ -2667,9 +3224,16 @@ func registerAbilityUseLocked(
 		cooldowns := abilityCooldownMapLocked(session, player.ID)
 		cooldowns[ability] = session.tickID + cooldownTicks
 	}
-	if abilities.OncePerDay(ability) && session.gameState.Phase.Current == model.PhaseDay {
-		usedByDay := abilityUsedDayMapLocked(session, player.ID)
-		usedByDay[ability] = session.gameState.Phase.StartedTick
+	dailyLimit := abilities.DailyUseLimit(ability)
+	if dailyLimit > 0 && session.gameState.Phase.Current == model.PhaseDay {
+		usage := abilityDailyUsageMapLocked(session, player.ID)
+		record := usage[ability]
+		if record.DayStartTick != session.gameState.Phase.StartedTick {
+			record.DayStartTick = session.gameState.Phase.StartedTick
+			record.UseCount = 0
+		}
+		record.UseCount++
+		usage[ability] = record
 	}
 }
 
@@ -2693,6 +3257,18 @@ func abilityUsedDayMapLocked(session *matchSession, playerID model.PlayerID) map
 	if !exists {
 		perPlayer = make(map[model.AbilityType]uint64)
 		session.abilityUsedDayStart[playerID] = perPlayer
+	}
+	return perPlayer
+}
+
+func abilityDailyUsageMapLocked(session *matchSession, playerID model.PlayerID) map[model.AbilityType]dailyAbilityUsage {
+	if session.abilityDailyUsage == nil {
+		session.abilityDailyUsage = make(map[model.PlayerID]map[model.AbilityType]dailyAbilityUsage)
+	}
+	perPlayer, exists := session.abilityDailyUsage[playerID]
+	if !exists {
+		perPlayer = make(map[model.AbilityType]dailyAbilityUsage)
+		session.abilityDailyUsage[playerID] = perPlayer
 	}
 	return perPlayer
 }
@@ -2778,6 +3354,59 @@ func upsertEffectLocked(
 	return true
 }
 
+func removeEffectLocked(player *model.PlayerState, effect model.EffectType) bool {
+	if player == nil || effect == "" || len(player.Effects) == 0 {
+		return false
+	}
+
+	next := player.Effects[:0]
+	removed := false
+	for _, existing := range player.Effects {
+		if existing.Effect == effect {
+			removed = true
+			continue
+		}
+		next = append(next, existing)
+	}
+	if !removed {
+		return false
+	}
+	player.Effects = append([]model.EffectState(nil), next...)
+	return true
+}
+
+func hasActiveEffect(player model.PlayerState, effect model.EffectType, tickID uint64) bool {
+	for _, existing := range player.Effects {
+		if existing.Effect != effect {
+			continue
+		}
+		if existing.EndsTick != 0 && tickID > existing.EndsTick {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func summarizeInventoryForFeedback(inventory []model.ItemStack) string {
+	if len(inventory) == 0 {
+		return "empty"
+	}
+
+	parts := make([]string, 0, len(inventory))
+	for _, stack := range inventory {
+		if stack.Item == "" || stack.Quantity == 0 {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s x%d", stack.Item, stack.Quantity))
+	}
+	if len(parts) == 0 {
+		return "empty"
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ", ")
+}
+
 func expireTimedStatesLocked(
 	session *matchSession,
 	changedPlayers map[model.PlayerID]struct{},
@@ -2855,6 +3484,42 @@ func expireTimedStatesLocked(
 				player.TempHeartsHalf = 0
 			}
 			changedPlayers[player.ID] = struct{}{}
+		}
+	}
+
+	if len(session.chameleonPendingUntil) > 0 {
+		for index := range session.gameState.Players {
+			player := &session.gameState.Players[index]
+			pendingUntil := session.chameleonPendingUntil[player.ID]
+			if pendingUntil == 0 || session.tickID < pendingUntil {
+				continue
+			}
+			lastMoveTick := uint64(0)
+			if session.lastMoveIntentTick != nil {
+				lastMoveTick = session.lastMoveIntentTick[player.ID]
+			}
+			if lastMoveTick >= pendingUntil {
+				delete(session.chameleonPendingUntil, player.ID)
+				continue
+			}
+			if hasActiveEffect(*player, model.EffectChameleon, session.tickID) {
+				delete(session.chameleonPendingUntil, player.ID)
+				continue
+			}
+
+			if upsertEffectLocked(player, model.EffectChameleon, 0, player.ID, 0, 1) {
+				changedPlayers[player.ID] = struct{}{}
+				if applyActionFeedbackLocked(
+					player,
+					model.ActionFeedbackKindSystem,
+					model.ActionFeedbackLevelSuccess,
+					"Chameleon active: hidden until you move.",
+					session.tickID,
+				) {
+					changedPlayers[player.ID] = struct{}{}
+				}
+			}
+			delete(session.chameleonPendingUntil, player.ID)
 		}
 	}
 }
@@ -3520,6 +4185,42 @@ func collectChangedPlayers(
 	return out
 }
 
+func mergeChangedPlayersByIDLocked(
+	session *matchSession,
+	baseline []model.PlayerState,
+	extraIDs map[model.PlayerID]struct{},
+) []model.PlayerState {
+	if len(extraIDs) == 0 {
+		return baseline
+	}
+
+	byID := make(map[model.PlayerID]model.PlayerState, len(baseline)+len(extraIDs))
+	for _, player := range baseline {
+		byID[player.ID] = clonePlayerState(player)
+	}
+
+	for _, player := range session.gameState.Players {
+		if _, include := extraIDs[player.ID]; !include {
+			continue
+		}
+		byID[player.ID] = clonePlayerState(player)
+	}
+
+	ids := make([]model.PlayerID, 0, len(byID))
+	for playerID := range byID {
+		ids = append(ids, playerID)
+	}
+	sort.Slice(ids, func(i int, j int) bool {
+		return ids[i] < ids[j]
+	})
+
+	out := make([]model.PlayerState, 0, len(ids))
+	for _, playerID := range ids {
+		out = append(out, byID[playerID])
+	}
+	return out
+}
+
 func collectChangedDoors(session *matchSession, changed map[model.DoorID]struct{}) []model.DoorState {
 	if len(changed) == 0 {
 		return nil
@@ -3565,6 +4266,7 @@ func collectChangedCells(session *matchSession, changed map[model.CellID]struct{
 			if session.gameState.Map.Cells[idx].ID == cellID {
 				cell := session.gameState.Map.Cells[idx]
 				cell.OccupantPlayerIDs = append([]model.PlayerID(nil), cell.OccupantPlayerIDs...)
+				cell.Stash = append([]model.ItemStack(nil), cell.Stash...)
 				out = append(out, cell)
 				break
 			}
@@ -3733,6 +4435,7 @@ func cloneGameDelta(in model.GameDelta) model.GameDelta {
 	out.ChangedCells = append([]model.CellState(nil), in.ChangedCells...)
 	for idx := range out.ChangedCells {
 		out.ChangedCells[idx].OccupantPlayerIDs = append([]model.PlayerID(nil), in.ChangedCells[idx].OccupantPlayerIDs...)
+		out.ChangedCells[idx].Stash = append([]model.ItemStack(nil), in.ChangedCells[idx].Stash...)
 	}
 	out.ChangedZones = append([]model.ZoneState(nil), in.ChangedZones...)
 
@@ -3787,6 +4490,7 @@ func cloneGameState(in model.GameState) model.GameState {
 	out.Map.Cells = append([]model.CellState(nil), in.Map.Cells...)
 	for idx := range out.Map.Cells {
 		out.Map.Cells[idx].OccupantPlayerIDs = append([]model.PlayerID(nil), in.Map.Cells[idx].OccupantPlayerIDs...)
+		out.Map.Cells[idx].Stash = append([]model.ItemStack(nil), in.Map.Cells[idx].Stash...)
 	}
 	out.Map.RestrictedZones = append([]model.ZoneState(nil), in.Map.RestrictedZones...)
 
@@ -3803,6 +4507,7 @@ func clonePlayerState(in model.PlayerState) model.PlayerState {
 	out := in
 	out.Inventory = append([]model.ItemStack(nil), in.Inventory...)
 	out.Cards = append([]model.CardType(nil), in.Cards...)
+	out.NightCardChoices = append([]model.CardType(nil), in.NightCardChoices...)
 	out.Effects = append([]model.EffectState(nil), in.Effects...)
 	return out
 }

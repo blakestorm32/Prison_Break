@@ -627,7 +627,7 @@ func TestActionPanelAvailabilityHidesMarketAndEscapeForAuthority(t *testing.T) {
 		Alive:   true,
 		Faction: model.FactionAuthority,
 		Role:    model.RoleDeputy,
-	})
+	}, model.GameState{})
 	if availability.market {
 		t.Fatalf("expected market panel hidden for authority roles")
 	}
@@ -642,7 +642,7 @@ func TestActionPanelAvailabilityShowsMarketAndEscapeForPrisoners(t *testing.T) {
 		Alive:   true,
 		Faction: model.FactionPrisoner,
 		Role:    model.RoleGangMember,
-	})
+	}, model.GameState{})
 	if !availability.market {
 		t.Fatalf("expected market panel visible for prisoner roles")
 	}

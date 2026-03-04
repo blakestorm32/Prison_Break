@@ -66,3 +66,23 @@ func TestParseUint8EnvParsesValidAndRejectsInvalid(t *testing.T) {
 		t.Fatalf("expected parseUint8Env invalid parse fallback to 0, got %d", got)
 	}
 }
+
+func TestLoadRunConfigFromEnvManualUITestOptions(t *testing.T) {
+	t.Setenv("PRISON_MANUAL_UI_TEST", "true")
+	t.Setenv("PRISON_MANUAL_UI_TEST_CLIENTS", "7")
+
+	cfg := loadRunConfigFromEnv()
+	if !cfg.manualUITest {
+		t.Fatalf("expected manual ui test mode true")
+	}
+	if cfg.manualUITestClient != 7 {
+		t.Fatalf("expected manual ui test client count 7, got %d", cfg.manualUITestClient)
+	}
+}
+
+func TestParseIntEnvFallbackOnInvalid(t *testing.T) {
+	t.Setenv("TEST_INT_ENV", "abc")
+	if got := parseIntEnv("TEST_INT_ENV", 5); got != 5 {
+		t.Fatalf("expected parseIntEnv fallback 5 for invalid value, got %d", got)
+	}
+}

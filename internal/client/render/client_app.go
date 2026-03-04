@@ -26,6 +26,9 @@ type ClientAppConfig struct {
 	ScreenHeight int
 
 	SessionConfig netclient.SessionConfig
+
+	ManualUITestMode    bool
+	ManualUITestClients int
 }
 
 type connectResult struct {
@@ -38,6 +41,11 @@ type lobbyFetchResult struct {
 	attemptID uint64
 	lobbies   []protocol.LobbySummary
 	err       error
+}
+
+type manualHarnessResult struct {
+	sessions []*netclient.Session
+	err      error
 }
 
 type ClientApp struct {
@@ -57,6 +65,14 @@ type ClientApp struct {
 
 	lobbyFetchAttemptID uint64
 	lobbyFetchResults   chan lobbyFetchResult
+
+	manualUITestMode      bool
+	manualUITestClients   int
+	manualHarnessConnect  bool
+	manualHarnessCancel   context.CancelFunc
+	manualHarnessSessions []*netclient.Session
+	manualHarnessIndex    int
+	manualHarnessResults  chan manualHarnessResult
 
 	codexPages []onboarding.CodexPage
 
@@ -92,24 +108,36 @@ func NewClientApp(config ClientAppConfig) *ClientApp {
 		sessionCfg.SendQueueDepth = defaults.SendQueueDepth
 	}
 
+	manualClientCount := clampManualUITestClientCount(config.ManualUITestClients)
+	if manualClientCount == 0 {
+		manualClientCount = 5
+	}
+
 	return &ClientApp{
-		screenWidth:         screenWidth,
-		screenHeight:        screenHeight,
-		sessionConfig:       sessionCfg,
-		flow:                flow,
-		lastStage:           flow.Stage(),
-		connectResults:      make(chan connectResult, 4),
-		lobbyFetchResults:   make(chan lobbyFetchResult, 4),
-		codexPages:          onboarding.Pages(),
-		lastSendWarnAt:      time.Time{},
-		connectAttemptID:    0,
-		lobbyFetchAttemptID: 0,
+		screenWidth:          screenWidth,
+		screenHeight:         screenHeight,
+		sessionConfig:        sessionCfg,
+		flow:                 flow,
+		lastStage:            flow.Stage(),
+		connectResults:       make(chan connectResult, 4),
+		lobbyFetchResults:    make(chan lobbyFetchResult, 4),
+		manualUITestMode:     config.ManualUITestMode,
+		manualUITestClients:  manualClientCount,
+		manualHarnessResults: make(chan manualHarnessResult, 2),
+		codexPages:           onboarding.Pages(),
+		lastSendWarnAt:       time.Time{},
+		connectAttemptID:     0,
+		lobbyFetchAttemptID:  0,
 	}
 }
 
 func (a *ClientApp) Update() error {
 	if a == nil || a.flow == nil {
 		return nil
+	}
+
+	if a.manualUITestMode {
+		a.ensureManualHarnessStarted()
 	}
 
 	a.processAsyncResults()
@@ -144,6 +172,9 @@ func (a *ClientApp) Draw(screen *ebiten.Image) {
 
 	if a.flow.Stage() == prematch.StageInMatch && a.shell != nil {
 		a.shell.Draw(screen)
+		if a.manualUITestMode {
+			a.drawManualHarnessOverlay(screen)
+		}
 		return
 	}
 
@@ -249,6 +280,18 @@ func (a *ClientApp) updateInMatch() error {
 		return nil
 	}
 
+	if a.manualUITestMode {
+		if inpututil.IsKeyJustPressed(ebiten.KeyF1) {
+			a.switchManualHarnessSession(-1)
+		}
+		if inpututil.IsKeyJustPressed(ebiten.KeyF2) {
+			a.switchManualHarnessSession(1)
+		}
+		if index, ok := manualHarnessDirectSwitchIndex(); ok {
+			a.setActiveManualHarnessSession(index)
+		}
+	}
+
 	if inpututil.IsKeyJustPressed(ebiten.KeyEscape) || inpututil.IsKeyJustPressed(ebiten.KeyP) {
 		a.shell.TogglePauseMenu()
 		return nil
@@ -282,6 +325,15 @@ func (a *ClientApp) handleStageTransition() {
 func (a *ClientApp) processAsyncResults() {
 	for {
 		select {
+		case result := <-a.manualHarnessResults:
+			a.manualHarnessConnect = false
+			a.manualHarnessCancel = nil
+			if result.err != nil {
+				a.closeManualHarnessSessions(result.sessions)
+				a.flow.OnConnectError(result.err)
+				continue
+			}
+			a.onManualHarnessConnected(result.sessions)
 		case result := <-a.lobbyFetchResults:
 			if result.attemptID != a.lobbyFetchAttemptID {
 				continue
@@ -309,6 +361,181 @@ func (a *ClientApp) processAsyncResults() {
 			return
 		}
 	}
+}
+
+func (a *ClientApp) ensureManualHarnessStarted() {
+	if a == nil || !a.manualUITestMode {
+		return
+	}
+	if a.manualHarnessConnect || len(a.manualHarnessSessions) > 0 {
+		return
+	}
+	if a.flow.Stage() == prematch.StageErrorNotice {
+		return
+	}
+
+	if a.flow.Stage() == prematch.StageMainMenu {
+		_, shouldConnect := a.flow.ActivateMenuSelection()
+		if !shouldConnect {
+			a.flow.OnConnectError(errors.New("manual ui test mode requires quick-play menu path"))
+			return
+		}
+	}
+	if a.flow.Stage() != prematch.StageConnecting {
+		return
+	}
+
+	a.startManualHarnessConnect()
+}
+
+func (a *ClientApp) startManualHarnessConnect() {
+	if a == nil || a.manualHarnessConnect {
+		return
+	}
+
+	a.manualHarnessConnect = true
+	clientCount := clampManualUITestClientCount(a.manualUITestClients)
+	if clientCount == 0 {
+		clientCount = 5
+	}
+	ctxRoot, cancel := context.WithCancel(context.Background())
+	a.manualHarnessCancel = cancel
+
+	baseCfg := a.sessionConfig
+	go func() {
+		defer cancel()
+		sessions := make([]*netclient.Session, 0, clientCount)
+		runID := time.Now().UTC().UnixNano()
+		baseName := nonEmptyOrFallback(strings.TrimSpace(baseCfg.PlayerName), "UI-Tester")
+		matchID := model.MatchID(strings.TrimSpace(string(baseCfg.PreferredMatchID)))
+
+		for idx := 0; idx < clientCount; idx++ {
+			cfg := baseCfg
+			cfg.Spectator = false
+			cfg.SpectatorFollowPlayerID = ""
+			cfg.SpectatorFollowSlot = 0
+			cfg.PlayerName = fmt.Sprintf("%s-%d", baseName, idx+1)
+			cfg.PlayerID = model.PlayerID(fmt.Sprintf("ui-%d-%02d", runID, idx+1))
+			if idx > 0 {
+				cfg.PreferredMatchID = matchID
+			}
+
+			ctx, timeoutCancel := context.WithTimeout(ctxRoot, 12*time.Second)
+			session, err := netclient.DialAndJoin(ctx, cfg)
+			timeoutCancel()
+			if err != nil {
+				for _, opened := range sessions {
+					_ = opened.Close()
+				}
+				select {
+				case a.manualHarnessResults <- manualHarnessResult{
+					err: fmt.Errorf("manual ui harness join failed at client %d/%d: %w", idx+1, clientCount, err),
+				}:
+				default:
+				}
+				return
+			}
+
+			if idx == 0 {
+				matchID = session.MatchID()
+			}
+			sessions = append(sessions, session)
+		}
+
+		select {
+		case a.manualHarnessResults <- manualHarnessResult{
+			sessions: sessions,
+		}:
+		default:
+			for _, opened := range sessions {
+				_ = opened.Close()
+			}
+		}
+	}()
+}
+
+func (a *ClientApp) onManualHarnessConnected(sessions []*netclient.Session) {
+	if a == nil {
+		return
+	}
+	if len(sessions) == 0 {
+		a.flow.OnConnectError(errors.New("manual ui harness connected with no sessions"))
+		return
+	}
+
+	a.closeManualHarnessSessions(nil)
+	a.manualHarnessSessions = append([]*netclient.Session(nil), sessions...)
+	a.manualHarnessIndex = 0
+	a.setActiveManualHarnessSession(0)
+}
+
+func (a *ClientApp) switchManualHarnessSession(delta int) {
+	if a == nil || len(a.manualHarnessSessions) == 0 || delta == 0 {
+		return
+	}
+	next := a.manualHarnessIndex + delta
+	for next < 0 {
+		next += len(a.manualHarnessSessions)
+	}
+	next = next % len(a.manualHarnessSessions)
+	a.setActiveManualHarnessSession(next)
+}
+
+func (a *ClientApp) setActiveManualHarnessSession(index int) {
+	if a == nil || len(a.manualHarnessSessions) == 0 {
+		return
+	}
+	if index < 0 || index >= len(a.manualHarnessSessions) {
+		return
+	}
+
+	session := a.manualHarnessSessions[index]
+	if session == nil {
+		return
+	}
+	a.manualHarnessIndex = index
+	a.session = session
+	a.shell = nil
+	a.lastSendWarnAt = time.Time{}
+	a.ensureShell()
+
+	if state, ok := session.Store().CurrentState(); ok {
+		a.flow.OnJoined(prematch.LobbyStatus{
+			MatchID:     session.MatchID(),
+			Status:      state.Status,
+			PlayerCount: uint8(len(state.Players)),
+			MinPlayers:  session.MinPlayers(),
+			MaxPlayers:  session.MaxPlayers(),
+		})
+	} else {
+		a.flow.OnConnectError(errors.New("manual ui harness session has no snapshot state"))
+	}
+}
+
+func (a *ClientApp) closeManualHarnessSessions(extra []*netclient.Session) {
+	seen := make(map[*netclient.Session]struct{}, len(a.manualHarnessSessions)+len(extra))
+	for _, session := range a.manualHarnessSessions {
+		if session == nil {
+			continue
+		}
+		if _, exists := seen[session]; exists {
+			continue
+		}
+		seen[session] = struct{}{}
+		_ = session.Close()
+	}
+	for _, session := range extra {
+		if session == nil {
+			continue
+		}
+		if _, exists := seen[session]; exists {
+			continue
+		}
+		seen[session] = struct{}{}
+		_ = session.Close()
+	}
+	a.manualHarnessSessions = nil
+	a.manualHarnessIndex = 0
 }
 
 func (a *ClientApp) onConnectSuccess(session *netclient.Session) {
@@ -469,15 +696,27 @@ func (a *ClientApp) cancelActiveConnect() {
 		a.connectCancel()
 		a.connectCancel = nil
 	}
+	if a.manualHarnessCancel != nil {
+		a.manualHarnessCancel()
+		a.manualHarnessCancel = nil
+	}
+	a.manualHarnessConnect = false
 }
 
 func (a *ClientApp) leaveSessionOnly() {
-	if a.session != nil {
+	if a.manualHarnessCancel != nil {
+		a.manualHarnessCancel()
+		a.manualHarnessCancel = nil
+	}
+	if len(a.manualHarnessSessions) > 0 {
+		a.closeManualHarnessSessions(nil)
+	} else if a.session != nil {
 		_ = a.session.Close()
 	}
 	a.session = nil
 	a.shell = nil
 	a.lastSendWarnAt = time.Time{}
+	a.manualHarnessConnect = false
 }
 
 func (a *ClientApp) leaveSessionToMenu() {
@@ -496,6 +735,15 @@ func (a *ClientApp) buildPreMatchLines() []string {
 	case prematch.StageTutorial:
 		return a.tutorialLines()
 	case prematch.StageConnecting:
+		if a.manualUITestMode {
+			return []string{
+				"Prison Break - Manual UI Test Mode",
+				"",
+				fmt.Sprintf("Spawning %d local clients into one lobby...", clampManualUITestClientCount(a.manualUITestClients)),
+				"Waiting for all clients to connect and auto-start match.",
+				"Press Esc to cancel.",
+			}
+		}
 		return []string{
 			"Prison Break - Connecting",
 			"",
@@ -626,6 +874,63 @@ func (a *ClientApp) tutorialLines() []string {
 	lines = append(lines, page.Lines...)
 	lines = append(lines, "", "Controls: Left/Right move page, Esc back to menu")
 	return lines
+}
+
+func (a *ClientApp) drawManualHarnessOverlay(screen *ebiten.Image) {
+	if a == nil || !a.manualUITestMode || len(a.manualHarnessSessions) == 0 {
+		return
+	}
+
+	total := len(a.manualHarnessSessions)
+	current := a.manualHarnessIndex + 1
+	localID := model.PlayerID("")
+	if a.session != nil {
+		localID = a.session.LocalPlayerID()
+	}
+
+	lines := []string{
+		fmt.Sprintf("Manual UI Test Mode  Client %d/%d  Player %s", current, total, nonEmptyOrFallback(string(localID), "--")),
+		"Switch Character: F1 previous | F2 next | number keys 1-9 direct",
+	}
+	panelX := 12
+	panelY := a.screenHeight - 52
+	if panelY < 12 {
+		panelY = 12
+	}
+
+	for idx, line := range lines {
+		text.Draw(screen, line, basicfont.Face7x13, panelX, panelY+(idx*16), color.RGBA{R: 232, G: 239, B: 246, A: 255})
+	}
+}
+
+func manualHarnessDirectSwitchIndex() (int, bool) {
+	keys := []ebiten.Key{
+		ebiten.Key1,
+		ebiten.Key2,
+		ebiten.Key3,
+		ebiten.Key4,
+		ebiten.Key5,
+		ebiten.Key6,
+		ebiten.Key7,
+		ebiten.Key8,
+		ebiten.Key9,
+	}
+	for idx, key := range keys {
+		if inpututil.IsKeyJustPressed(key) {
+			return idx, true
+		}
+	}
+	return 0, false
+}
+
+func clampManualUITestClientCount(requested int) int {
+	if requested <= 0 {
+		return 5
+	}
+	if requested > 9 {
+		return 9
+	}
+	return requested
 }
 
 func nonEmptyOrFallback(value string, fallback string) string {

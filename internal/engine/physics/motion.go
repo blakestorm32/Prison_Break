@@ -8,8 +8,8 @@ import (
 )
 
 const (
-	BaseMoveStepPerTick     float32 = 1.0
-	SprintMoveStepPerTick   float32 = 1.35
+	BaseMoveStepPerTick     float32 = 0.30
+	SprintMoveStepPerTick   float32 = 0.425
 	MaxKnockbackStepPerTick float32 = 1.50
 )
 
@@ -126,6 +126,12 @@ func resolveVectorMotion(
 
 	current := player.Position
 	originalTile := TileFromPosition(current)
+	currentRoomID := player.CurrentRoomID
+	if currentRoomID == "" {
+		if roomID, exists := layout.RoomAt(originalTile); exists {
+			currentRoomID = roomID
+		}
+	}
 	if occupied != nil {
 		delete(occupied, originalTile)
 	}
@@ -135,18 +141,24 @@ func resolveVectorMotion(
 	if desired.X != 0 {
 		candidate := current
 		candidate.X += desired.X
-		if canOccupyPosition(player.ID, candidate, layout, mapState, occupied, &result) {
+		if canOccupyPosition(player, current, currentRoomID, candidate, layout, mapState, occupied, &result) {
 			applied.X = desired.X
 			current = candidate
+			if roomID, exists := layout.RoomAt(TileFromPosition(current)); exists {
+				currentRoomID = roomID
+			}
 		}
 	}
 
 	if desired.Y != 0 {
 		candidate := current
 		candidate.Y += desired.Y
-		if canOccupyPosition(player.ID, candidate, layout, mapState, occupied, &result) {
+		if canOccupyPosition(player, current, currentRoomID, candidate, layout, mapState, occupied, &result) {
 			applied.Y = desired.Y
 			current = candidate
+			if roomID, exists := layout.RoomAt(TileFromPosition(current)); exists {
+				currentRoomID = roomID
+			}
 		}
 	}
 
@@ -161,13 +173,16 @@ func resolveVectorMotion(
 }
 
 func canOccupyPosition(
-	playerID model.PlayerID,
+	player model.PlayerState,
+	currentPosition model.Vector2,
+	currentRoomID model.RoomID,
 	position model.Vector2,
 	layout gamemap.Layout,
 	mapState model.MapState,
 	occupied map[gamemap.Point]model.PlayerID,
 	result *MotionResult,
 ) bool {
+	currentTilePoint := TileFromPosition(currentPosition)
 	tilePoint := TileFromPosition(position)
 	if !layout.InBounds(tilePoint) {
 		result.BlockedByMap = true
@@ -180,6 +195,20 @@ func canOccupyPosition(
 		return false
 	}
 
+	targetRoomID := tile.RoomID
+	if targetRoomID != "" && currentRoomID != "" && targetRoomID != currentRoomID {
+		if doorID, hasDoor := doorwayBetweenRooms(layout, currentTilePoint, tilePoint, currentRoomID, targetRoomID); hasDoor {
+			if !isDoorOpen(mapState, doorID) {
+				result.BlockedByDoorID = doorID
+				return false
+			}
+		}
+		if !gamemap.CanEnterRoom(player, targetRoomID, mapState) {
+			result.BlockedByMap = true
+			return false
+		}
+	}
+
 	if doorLink, isDoorTile := layout.DoorLinkAt(tilePoint); isDoorTile {
 		if !isDoorOpen(mapState, doorLink.ID) {
 			result.BlockedByDoorID = doorLink.ID
@@ -188,7 +217,7 @@ func canOccupyPosition(
 	}
 
 	if occupied != nil {
-		if occupant, occupiedByPlayer := occupied[tilePoint]; occupiedByPlayer && occupant != "" && occupant != playerID {
+		if occupant, occupiedByPlayer := occupied[tilePoint]; occupiedByPlayer && occupant != "" && occupant != player.ID {
 			result.BlockedByPlayerID = occupant
 			return false
 		}
@@ -204,6 +233,36 @@ func isDoorOpen(mapState model.MapState, doorID model.DoorID) bool {
 		}
 	}
 	return true
+}
+
+func doorwayBetweenRooms(
+	layout gamemap.Layout,
+	fromPoint gamemap.Point,
+	toPoint gamemap.Point,
+	fromRoomID model.RoomID,
+	toRoomID model.RoomID,
+) (model.DoorID, bool) {
+	if link, exists := layout.DoorLinkAt(fromPoint); exists {
+		if connectsRooms(link, fromRoomID, toRoomID) {
+			return link.ID, true
+		}
+	}
+	if link, exists := layout.DoorLinkAt(toPoint); exists {
+		if connectsRooms(link, fromRoomID, toRoomID) {
+			return link.ID, true
+		}
+	}
+	return 0, false
+}
+
+func connectsRooms(link gamemap.DoorLink, roomA model.RoomID, roomB model.RoomID) bool {
+	if link.RoomA == roomA && link.RoomB == roomB {
+		return true
+	}
+	if link.RoomA == roomB && link.RoomB == roomA {
+		return true
+	}
+	return false
 }
 
 func clampVectorMagnitude(vector model.Vector2, maxMagnitude float32) model.Vector2 {

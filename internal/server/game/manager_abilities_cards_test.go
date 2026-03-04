@@ -279,15 +279,18 @@ func TestAbilityTrackerCooldownBlocksRapidReuseThenAllows(t *testing.T) {
 	mustSubmitUseAbilityTargetForTest(t, manager, match.MatchID, "auth", 1, model.AbilityTracker, "pris")
 	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 1, 0, time.UTC))
 	waitForTick(t, manager, match.MatchID, 1)
-	firstEnds := effectEndTickForTest(manager, match.MatchID, "pris", model.EffectTracked)
+	firstEnds := effectEndTickForTest(manager, match.MatchID, "auth", model.EffectTrackerView)
 	if firstEnds == 0 {
-		t.Fatalf("expected tracker effect to be applied on first use")
+		t.Fatalf("expected tracker_view effect on ability user after first use")
+	}
+	if end := effectEndTickForTest(manager, match.MatchID, "pris", model.EffectTracked); end != 0 {
+		t.Fatalf("expected tracker ability to stop marking target players directly, got tracked end %d", end)
 	}
 
 	mustSubmitUseAbilityTargetForTest(t, manager, match.MatchID, "auth", 2, model.AbilityTracker, "pris")
 	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 2, 0, time.UTC))
 	waitForTick(t, manager, match.MatchID, 2)
-	secondEnds := effectEndTickForTest(manager, match.MatchID, "pris", model.EffectTracked)
+	secondEnds := effectEndTickForTest(manager, match.MatchID, "auth", model.EffectTrackerView)
 	if secondEnds != firstEnds {
 		t.Fatalf("expected tracker cooldown to block rapid second use, first=%d second=%d", firstEnds, secondEnds)
 	}
@@ -300,7 +303,7 @@ func TestAbilityTrackerCooldownBlocksRapidReuseThenAllows(t *testing.T) {
 	mustSubmitUseAbilityTargetForTest(t, manager, match.MatchID, "auth", 3, model.AbilityTracker, "pris")
 	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 9, 0, time.UTC))
 	waitForTick(t, manager, match.MatchID, 9)
-	thirdEnds := effectEndTickForTest(manager, match.MatchID, "pris", model.EffectTracked)
+	thirdEnds := effectEndTickForTest(manager, match.MatchID, "auth", model.EffectTrackerView)
 	if thirdEnds <= firstEnds {
 		t.Fatalf("expected tracker reuse after cooldown to extend effect, first=%d third=%d", firstEnds, thirdEnds)
 	}
@@ -369,7 +372,7 @@ func TestAbilityPickPocketAndHackerApplyExpectedEffects(t *testing.T) {
 	}
 }
 
-func TestAbilityCameraManRequiresCameraRoomAndPowerAndMarksRestrictedPrisoners(t *testing.T) {
+func TestAbilityCameraManRequiresCameraRoomAndPowerAndAppliesCameraViewOnUser(t *testing.T) {
 	manager, _, factory := newTestManager(
 		Config{
 			MinPlayers:    3,
@@ -414,8 +417,8 @@ func TestAbilityCameraManRequiresCameraRoomAndPowerAndMarksRestrictedPrisoners(t
 	mustSubmitUseAbility(t, manager, match.MatchID, "cam", 1, model.AbilityCameraMan)
 	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 1, 0, time.UTC))
 	waitForTick(t, manager, match.MatchID, 1)
-	if end := effectEndTickForTest(manager, match.MatchID, "restricted", model.EffectTracked); end != 0 {
-		t.Fatalf("expected camera_man outside camera room to fail, got tracked end %d", end)
+	if end := effectEndTickForTest(manager, match.MatchID, "cam", model.EffectCameraView); end != 0 {
+		t.Fatalf("expected camera_man outside camera room to fail, got camera_view end %d", end)
 	}
 
 	setPlayerRoomForTest(manager, match.MatchID, "cam", gamemap.RoomCameraRoom)
@@ -423,8 +426,8 @@ func TestAbilityCameraManRequiresCameraRoomAndPowerAndMarksRestrictedPrisoners(t
 	mustSubmitUseAbility(t, manager, match.MatchID, "cam", 2, model.AbilityCameraMan)
 	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 2, 0, time.UTC))
 	waitForTick(t, manager, match.MatchID, 2)
-	if end := effectEndTickForTest(manager, match.MatchID, "restricted", model.EffectTracked); end != 0 {
-		t.Fatalf("expected camera_man to fail while power off, got tracked end %d", end)
+	if end := effectEndTickForTest(manager, match.MatchID, "cam", model.EffectCameraView); end != 0 {
+		t.Fatalf("expected camera_man to fail while power off, got camera_view end %d", end)
 	}
 
 	setMapPowerForTest(manager, match.MatchID, true)
@@ -432,12 +435,15 @@ func TestAbilityCameraManRequiresCameraRoomAndPowerAndMarksRestrictedPrisoners(t
 	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 3, 0, time.UTC))
 	waitForTick(t, manager, match.MatchID, 3)
 
-	restrictedEnd := effectEndTickForTest(manager, match.MatchID, "restricted", model.EffectTracked)
-	if restrictedEnd <= 3 {
-		t.Fatalf("expected restricted prisoner to get tracked marker, got end tick %d", restrictedEnd)
+	cameraEnd := effectEndTickForTest(manager, match.MatchID, "cam", model.EffectCameraView)
+	if cameraEnd <= 3 {
+		t.Fatalf("expected camera_man to grant camera_view effect on user, got end tick %d", cameraEnd)
+	}
+	if end := effectEndTickForTest(manager, match.MatchID, "restricted", model.EffectTracked); end != 0 {
+		t.Fatalf("expected camera_man to stop tracked-marker side effects, restricted tracked end=%d", end)
 	}
 	if end := effectEndTickForTest(manager, match.MatchID, "free", model.EffectTracked); end != 0 {
-		t.Fatalf("expected non-restricted prisoner to avoid camera_man tracking, got end tick %d", end)
+		t.Fatalf("expected camera_man to stop tracked-marker side effects, free tracked end=%d", end)
 	}
 }
 
@@ -483,7 +489,7 @@ func TestAbilityCameraManActivatesWithoutRestrictedTargetsAndConsumesCooldown(t 
 	waitForTick(t, manager, match.MatchID, 1)
 
 	firstFeedback := playerLastActionFeedbackForTest(manager, match.MatchID, "cam")
-	if !strings.Contains(firstFeedback.Message, "Camera sweep marked 0 restricted prisoner(s).") {
+	if !strings.Contains(firstFeedback.Message, "Camera feed active for") {
 		t.Fatalf("expected camera ability to activate with zero targets, got %+v", firstFeedback)
 	}
 	if strings.Contains(strings.ToLower(firstFeedback.Message), "can't use that here") {
@@ -618,25 +624,37 @@ func TestAbilityDisguiseAndChameleonApplyDurationsCooldownAndExpire(t *testing.T
 	mustSubmitUseAbility(t, manager, match.MatchID, "p1", 3, model.AbilityChameleon)
 	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 3, 0, time.UTC))
 	waitForTick(t, manager, match.MatchID, 3)
-	chameleonEnd := effectEndTickForTest(manager, match.MatchID, "p1", model.EffectChameleon)
-	if chameleonEnd <= 3 {
-		t.Fatalf("expected chameleon effect to apply with future end tick, got %d", chameleonEnd)
+	if _, active := effectForTest(manager, match.MatchID, "p1", model.EffectChameleon); active {
+		t.Fatalf("expected chameleon to require stillness delay before activation")
 	}
 
-	maxEnd := disguiseEnd
-	if chameleonEnd > maxEnd {
-		maxEnd = chameleonEnd
-	}
-	for tick := uint64(4); tick <= maxEnd+1; tick++ {
+	for tick := uint64(4); tick <= 13; tick++ {
 		ticker.Tick(time.Date(2026, 2, 22, 12, 0, int(tick), 0, time.UTC))
 	}
-	waitForTick(t, manager, match.MatchID, maxEnd+1)
+	waitForTick(t, manager, match.MatchID, 13)
+
+	chameleonEnd, active := effectForTest(manager, match.MatchID, "p1", model.EffectChameleon)
+	if !active {
+		t.Fatalf("expected chameleon to activate after 5s stillness")
+	}
+	if chameleonEnd != 0 {
+		t.Fatalf("expected chameleon active effect to be movement-gated (no end tick), got %d", chameleonEnd)
+	}
+
+	mustSubmitMoveIntent(t, manager, match.MatchID, "p1", 4, 1, 0, false)
+	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 14, 0, time.UTC))
+	waitForTick(t, manager, match.MatchID, 14)
+
+	for tick := uint64(15); tick <= disguiseEnd+1; tick++ {
+		ticker.Tick(time.Date(2026, 2, 22, 12, 0, int(tick), 0, time.UTC))
+	}
+	waitForTick(t, manager, match.MatchID, disguiseEnd+1)
 
 	if end := effectEndTickForTest(manager, match.MatchID, "p1", model.EffectDisguised); end != 0 {
 		t.Fatalf("expected disguise effect cleanup after expiry, got end tick %d", end)
 	}
-	if end := effectEndTickForTest(manager, match.MatchID, "p1", model.EffectChameleon); end != 0 {
-		t.Fatalf("expected chameleon effect cleanup after expiry, got end tick %d", end)
+	if _, active = effectForTest(manager, match.MatchID, "p1", model.EffectChameleon); active {
+		t.Fatalf("expected chameleon effect cleanup after moving")
 	}
 }
 
@@ -1606,6 +1624,16 @@ func effectEndTickForTest(
 	playerID model.PlayerID,
 	effect model.EffectType,
 ) uint64 {
+	endTick, _ := effectForTest(manager, matchID, playerID, effect)
+	return endTick
+}
+
+func effectForTest(
+	manager *Manager,
+	matchID model.MatchID,
+	playerID model.PlayerID,
+	effect model.EffectType,
+) (endTick uint64, exists bool) {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
 
@@ -1616,11 +1644,11 @@ func effectEndTickForTest(
 		}
 		for _, candidate := range player.Effects {
 			if candidate.Effect == effect {
-				return candidate.EndsTick
+				return candidate.EndsTick, true
 			}
 		}
 	}
-	return 0
+	return 0, false
 }
 
 func playerTempHeartsForTest(manager *Manager, matchID model.MatchID, playerID model.PlayerID) uint8 {

@@ -42,6 +42,7 @@ type InputSnapshot struct {
 	PanelAbilitiesPressed bool
 	PanelMarketPressed    bool
 	PanelEscapePressed    bool
+	PanelStashPressed     bool
 	PanelPrevPressed      bool
 	PanelNextPressed      bool
 	PanelUsePressed       bool

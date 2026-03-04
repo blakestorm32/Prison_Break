@@ -63,15 +63,17 @@ type PlayerState struct {
 	Velocity Vector2 `json:"velocity"`
 	Facing   Vector2 `json:"facing"`
 
-	CurrentRoomID RoomID `json:"current_room_id,omitempty"`
-	AssignedCell  CellID `json:"assigned_cell_id,omitempty"`
-	LockedInCell  CellID `json:"locked_in_cell_id,omitempty"`
+	CurrentRoomID   RoomID      `json:"current_room_id,omitempty"`
+	AssignedCell    CellID      `json:"assigned_cell_id,omitempty"`
+	LockedInCell    CellID      `json:"locked_in_cell_id,omitempty"`
+	AssignedAbility AbilityType `json:"assigned_ability,omitempty"`
 
 	StunnedUntilTick  uint64 `json:"stunned_until_tick,omitempty"`
 	SolitaryUntilTick uint64 `json:"solitary_until_tick,omitempty"`
 
 	Inventory []ItemStack   `json:"inventory,omitempty"`
 	Cards     []CardType    `json:"cards,omitempty"`
+	NightCardChoices []CardType `json:"night_card_choices,omitempty"`
 	Effects   []EffectState `json:"effects,omitempty"`
 
 	LastEscapeAttempt  EscapeAttemptFeedback `json:"last_escape_attempt,omitempty"`
@@ -96,6 +98,7 @@ type CellState struct {
 	OwnerPlayerID     PlayerID   `json:"owner_player_id,omitempty"`
 	DoorID            DoorID     `json:"door_id,omitempty"`
 	OccupantPlayerIDs []PlayerID `json:"occupant_player_ids,omitempty"`
+	Stash             []ItemStack `json:"stash,omitempty"`
 }
 
 type ZoneState struct {

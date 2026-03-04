@@ -115,33 +115,34 @@ type Layout struct {
 }
 
 func DefaultPrisonLayout() Layout {
-	builder := newLayoutBuilder(38, 22)
+	// Expanded from 38x22 to 76x44 (4x total area) while preserving room graph and door IDs.
+	builder := newLayoutBuilder(76, 44)
 
-	builder.carveRoom(RoomCorridorMain, "Main Corridor", 1, 10, 36, 11, true)
+	builder.carveRoom(RoomCorridorMain, "Main Corridor", 1, 19, 74, 24, true)
 
-	builder.carveRoom(RoomWardenHQ, "Warden HQ", 2, 2, 7, 8, false)
-	builder.carveRoom(RoomCameraRoom, "Camera Room", 9, 2, 14, 8, false)
-	builder.carveRoom(RoomPowerRoom, "Power Room", 16, 2, 21, 8, false)
-	builder.carveRoom(RoomAmmoRoom, "Ammunition Room", 23, 2, 28, 8, false)
-	builder.carveRoom(RoomMailRoom, "Mail Room", 30, 2, 35, 8, false)
+	builder.carveRoom(RoomWardenHQ, "Warden HQ", 1, 2, 13, 17, false)
+	builder.carveRoom(RoomCameraRoom, "Camera Room", 16, 2, 28, 17, false)
+	builder.carveRoom(RoomPowerRoom, "Power Room", 31, 2, 43, 17, false)
+	builder.carveRoom(RoomAmmoRoom, "Ammunition Room", 46, 2, 58, 17, false)
+	builder.carveRoom(RoomMailRoom, "Mail Room", 61, 2, 73, 17, false)
 
-	builder.carveRoom(RoomCellBlockA, "Cell Block A", 2, 13, 7, 19, false)
-	builder.carveRoom(RoomCafeteria, "Cafeteria", 9, 13, 14, 19, false)
-	builder.carveRoom(RoomCourtyard, "Courtyard", 16, 13, 21, 19, false)
-	builder.carveRoom(RoomBlackMarket, "Black Market", 23, 13, 28, 19, false)
-	builder.carveRoom(RoomRoofLookout, "Roof Lookout", 30, 13, 35, 19, false)
+	builder.carveRoom(RoomCellBlockA, "Cell Block A", 1, 26, 13, 41, false)
+	builder.carveRoom(RoomCafeteria, "Cafeteria", 16, 26, 28, 41, false)
+	builder.carveRoom(RoomCourtyard, "Courtyard", 31, 26, 43, 41, false)
+	builder.carveRoom(RoomBlackMarket, "Black Market", 46, 26, 58, 41, false)
+	builder.carveRoom(RoomRoofLookout, "Roof Lookout", 61, 26, 73, 41, false)
 
-	builder.addDoor(1, RoomWardenHQ, RoomCorridorMain, Point{X: 4, Y: 9}, false)
-	builder.addDoor(2, RoomCameraRoom, RoomCorridorMain, Point{X: 11, Y: 9}, false)
-	builder.addDoor(3, RoomPowerRoom, RoomCorridorMain, Point{X: 18, Y: 9}, false)
-	builder.addDoor(4, RoomAmmoRoom, RoomCorridorMain, Point{X: 25, Y: 9}, false)
-	builder.addDoor(5, RoomMailRoom, RoomCorridorMain, Point{X: 32, Y: 9}, false)
+	builder.addDoor(1, RoomWardenHQ, RoomCorridorMain, Point{X: 7, Y: 18}, false)
+	builder.addDoor(2, RoomCameraRoom, RoomCorridorMain, Point{X: 22, Y: 18}, false)
+	builder.addDoor(3, RoomPowerRoom, RoomCorridorMain, Point{X: 37, Y: 18}, false)
+	builder.addDoor(4, RoomAmmoRoom, RoomCorridorMain, Point{X: 52, Y: 18}, false)
+	builder.addDoor(5, RoomMailRoom, RoomCorridorMain, Point{X: 67, Y: 18}, false)
 
-	builder.addDoor(6, RoomCellBlockA, RoomCorridorMain, Point{X: 4, Y: 12}, false)
-	builder.addDoor(7, RoomCafeteria, RoomCorridorMain, Point{X: 11, Y: 12}, false)
-	builder.addDoor(8, RoomCourtyard, RoomCorridorMain, Point{X: 18, Y: 12}, false)
-	builder.addDoor(9, RoomBlackMarket, RoomCorridorMain, Point{X: 25, Y: 12}, false)
-	builder.addDoor(10, RoomRoofLookout, RoomCorridorMain, Point{X: 32, Y: 12}, false)
+	builder.addDoor(6, RoomCellBlockA, RoomCorridorMain, Point{X: 7, Y: 25}, false)
+	builder.addDoor(7, RoomCafeteria, RoomCorridorMain, Point{X: 22, Y: 25}, false)
+	builder.addDoor(8, RoomCourtyard, RoomCorridorMain, Point{X: 37, Y: 25}, false)
+	builder.addDoor(9, RoomBlackMarket, RoomCorridorMain, Point{X: 52, Y: 25}, false)
+	builder.addDoor(10, RoomRoofLookout, RoomCorridorMain, Point{X: 67, Y: 25}, false)
 
 	builder.addRestrictedZone(1, RoomWardenHQ, "Warden HQ")
 	builder.addRestrictedZone(2, RoomCameraRoom, "Camera Room")

@@ -4,7 +4,7 @@ Source context: `game_idea.txt` and `repo_layout_and_architecture`.
 
 Current status:
 - Complete: `T-001`, `T-002`, `T-003`, `T-004`, `T-005`, `T-006`, `T-007`, `T-008`, `T-009`, `T-010`, `T-011`, `T-012`, `T-013`, `T-014`, `T-015`, `T-016`, `T-017`, `T-018`, `T-019`, `T-020`, `T-021`, `T-022`, `T-023`, `T-024`, `T-025`, `T-026`, `T-027`, `T-028`, `T-029`, `T-030`, `T-031`, `T-032`, `T-033`, `T-034`, `T-035`, `T-036`, `T-037`, `T-038`, `T-039`, `T-040`, `T-041`, `T-042`, `T-043`, `T-044`, `T-045`, `T-046`, `T-047`, `T-048`, `T-049`, `T-050`
-- Next up: release candidate playtest + bug-fix loop
+- Next up: `T-051` onward (post-playtest UX/gameplay pass)
 
 ## Ticket Order
 
@@ -207,3 +207,25 @@ Current status:
 ### T-050 Release candidate and launch checklist closure
 - Depends on: `T-049`
 - Done when: all blockers are closed, smoke suite passes in production-like environment, and go/no-go signoff is complete.
+
+## Post-Playtest UX and Gameplay Tickets
+
+### T-051 Implement public/private lobby creation and join-by-code flow
+- Depends on: `T-050`
+- Done when: players can choose public matchmaking or private lobby creation; private host sees a shareable lobby code; private join requires code entry.
+
+### T-052 Implement contextual HUD actions and role readout
+- Depends on: `T-051`
+- Done when: compact HUD always shows faction + exact role + phase (+ping when available), and interact/shoot affordances are visibly lit when available and dulled when unavailable.
+
+### T-053 Improve door readability with explicit open/closed presentation
+- Depends on: `T-052`
+- Done when: doors are visually obvious on the map and clearly communicate open vs closed state at gameplay glance.
+
+### T-054 Implement role-based spawn placement pass
+- Depends on: `T-053`
+- Done when: prisoners start in individual cells, warden starts in Warden HQ, and deputies/guards spawn in designated guard-side room(s).
+
+### T-055 Rebalance movement speed and camera-map feel
+- Depends on: `T-054`
+- Done when: baseline movement is slower/controllable, camera keeps player-centered readability, and map presentation no longer feels like a small static board.

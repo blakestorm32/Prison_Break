@@ -126,6 +126,7 @@ func cloneGameState(in model.GameState) model.GameState {
 	for i := range out.Players {
 		out.Players[i].Inventory = append([]model.ItemStack(nil), in.Players[i].Inventory...)
 		out.Players[i].Cards = append([]model.CardType(nil), in.Players[i].Cards...)
+		out.Players[i].NightCardChoices = append([]model.CardType(nil), in.Players[i].NightCardChoices...)
 		out.Players[i].Effects = append([]model.EffectState(nil), in.Players[i].Effects...)
 	}
 
@@ -139,6 +140,7 @@ func cloneGameState(in model.GameState) model.GameState {
 	out.Map.Cells = append([]model.CellState(nil), in.Map.Cells...)
 	for i := range out.Map.Cells {
 		out.Map.Cells[i].OccupantPlayerIDs = append([]model.PlayerID(nil), in.Map.Cells[i].OccupantPlayerIDs...)
+		out.Map.Cells[i].Stash = append([]model.ItemStack(nil), in.Map.Cells[i].Stash...)
 	}
 	out.Map.RestrictedZones = append([]model.ZoneState(nil), in.Map.RestrictedZones...)
 

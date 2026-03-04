@@ -18,6 +18,7 @@ type Spec struct {
 	Scope           ScopeType         `json:"scope"`
 	CooldownSeconds uint16            `json:"cooldown_seconds"`
 	OncePerDay      bool              `json:"once_per_day"`
+	DailyUseLimit   uint8             `json:"daily_use_limit,omitempty"`
 }
 
 var specsByAbility = map[model.AbilityType]Spec{
@@ -26,12 +27,14 @@ var specsByAbility = map[model.AbilityType]Spec{
 		Scope:           ScopeWardenOnly,
 		CooldownSeconds: 5,
 		OncePerDay:      true,
+		DailyUseLimit:   1,
 	},
 	model.AbilitySearch: {
 		Ability:         model.AbilitySearch,
 		Scope:           ScopeAuthority,
 		CooldownSeconds: 8,
 		OncePerDay:      true,
+		DailyUseLimit:   1,
 	},
 	model.AbilityCameraMan: {
 		Ability:         model.AbilityCameraMan,
@@ -42,6 +45,7 @@ var specsByAbility = map[model.AbilityType]Spec{
 		Ability:         model.AbilityDetainer,
 		Scope:           ScopeAuthority,
 		CooldownSeconds: 6,
+		DailyUseLimit:   2,
 	},
 	model.AbilityTracker: {
 		Ability:         model.AbilityTracker,
@@ -52,6 +56,7 @@ var specsByAbility = map[model.AbilityType]Spec{
 		Ability:         model.AbilityPickPocket,
 		Scope:           ScopePrisoner,
 		CooldownSeconds: 5,
+		DailyUseLimit:   1,
 	},
 	model.AbilityHacker: {
 		Ability:         model.AbilityHacker,
@@ -67,12 +72,42 @@ var specsByAbility = map[model.AbilityType]Spec{
 		Ability:         model.AbilityLocksmith,
 		Scope:           ScopePrisoner,
 		CooldownSeconds: 4,
+		DailyUseLimit:   1,
 	},
 	model.AbilityChameleon: {
 		Ability:         model.AbilityChameleon,
 		Scope:           ScopePrisoner,
 		CooldownSeconds: 8,
 	},
+}
+
+var abilityCatalog = []model.AbilityType{
+	model.AbilityAlarm,
+	model.AbilitySearch,
+	model.AbilityCameraMan,
+	model.AbilityDetainer,
+	model.AbilityTracker,
+	model.AbilityPickPocket,
+	model.AbilityHacker,
+	model.AbilityDisguise,
+	model.AbilityLocksmith,
+	model.AbilityChameleon,
+}
+
+func KnownAbilities() []model.AbilityType {
+	out := make([]model.AbilityType, len(abilityCatalog))
+	copy(out, abilityCatalog)
+	return out
+}
+
+func AbilitiesForPlayer(player model.PlayerState) []model.AbilityType {
+	eligible := make([]model.AbilityType, 0, len(abilityCatalog))
+	for _, ability := range abilityCatalog {
+		if CanPlayerUse(player, ability) {
+			eligible = append(eligible, ability)
+		}
+	}
+	return eligible
 }
 
 func IsKnownAbility(ability model.AbilityType) bool {
@@ -101,7 +136,21 @@ func OncePerDay(ability model.AbilityType) bool {
 	if !exists {
 		return false
 	}
-	return spec.OncePerDay
+	return spec.OncePerDay || spec.DailyUseLimit == 1
+}
+
+func DailyUseLimit(ability model.AbilityType) uint8 {
+	spec, exists := specsByAbility[ability]
+	if !exists {
+		return 0
+	}
+	if spec.DailyUseLimit > 0 {
+		return spec.DailyUseLimit
+	}
+	if spec.OncePerDay {
+		return 1
+	}
+	return 0
 }
 
 func CanPlayerUse(player model.PlayerState, ability model.AbilityType) bool {
@@ -129,15 +178,15 @@ func EffectDurationTicks(ability model.AbilityType, tickRateHz uint32) uint64 {
 
 	switch ability {
 	case model.AbilityCameraMan:
-		return uint64(tickRateHz) * 5
+		return uint64(tickRateHz) * 15
 	case model.AbilityDetainer:
-		return uint64(tickRateHz) * 3
+		return uint64(tickRateHz) * 15
 	case model.AbilityTracker:
-		return uint64(tickRateHz) * 8
+		return uint64(tickRateHz) * 30
 	case model.AbilityDisguise:
-		return uint64(tickRateHz) * 10
+		return uint64(tickRateHz) * 20
 	case model.AbilityChameleon:
-		return uint64(tickRateHz) * 10
+		return 0
 	default:
 		return 0
 	}

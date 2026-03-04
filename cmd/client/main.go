@@ -35,9 +35,11 @@ func main() {
 	ebiten.SetWindowSize(defaultWindowWidth, defaultWindowHeight)
 	ebiten.SetWindowTitle("Prison Break")
 	app := render.NewClientApp(render.ClientAppConfig{
-		ScreenWidth:   defaultWindowWidth,
-		ScreenHeight:  defaultWindowHeight,
-		SessionConfig: cfg.session,
+		ScreenWidth:         defaultWindowWidth,
+		ScreenHeight:        defaultWindowHeight,
+		SessionConfig:       cfg.session,
+		ManualUITestMode:    cfg.manualUITest,
+		ManualUITestClients: cfg.manualUITestClient,
 	})
 	if err := ebiten.RunGame(app); err != nil {
 		log.Fatalf("client exited with error: %v", err)
@@ -45,7 +47,9 @@ func main() {
 }
 
 type runConfig struct {
-	session netclient.SessionConfig
+	session            netclient.SessionConfig
+	manualUITest       bool
+	manualUITestClient int
 }
 
 func loadRunConfigFromEnv() runConfig {
@@ -82,6 +86,8 @@ func loadRunConfigFromEnv() runConfig {
 			WriteTimeout:            defaultSession.WriteTimeout,
 			SendQueueDepth:          defaultSession.SendQueueDepth,
 		},
+		manualUITest:       parseBoolEnv("PRISON_MANUAL_UI_TEST"),
+		manualUITestClient: parseIntEnv("PRISON_MANUAL_UI_TEST_CLIENTS", 5),
 	}
 }
 
@@ -151,4 +157,16 @@ func parseUint8Env(key string) uint8 {
 		return 0
 	}
 	return uint8(parsed)
+}
+
+func parseIntEnv(key string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }

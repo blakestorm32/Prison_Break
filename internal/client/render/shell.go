@@ -69,11 +69,17 @@ type Shell struct {
 	panelAbilitiesIdx       int
 	panelMarketIdx          int
 	panelEscapeIdx          int
+	panelNightCardsIdx      int
+	panelStashIdx           int
 	panelInputPrev          panelInputEdgeState
 	panelSuppressGameplay   bool
 	panelSuppressInteract   bool
 	panelLocalHint          string
 	panelLocalHintWarning   bool
+	cameraCyclePrevPressed  bool
+	cameraCycleNextPressed  bool
+	cameraViewRoomIndex     int
+	footstepHistory         map[model.PlayerID][]footstepSample
 	spectatorInputPrev      spectatorInputEdgeState
 	spectatorFollowPlayerID model.PlayerID
 	spectatorFollowSlot     int
@@ -81,6 +87,11 @@ type Shell struct {
 	pauseMenuOpen           bool
 	abilityInfoOpen         bool
 	abilityInfoPrevPressed  bool
+}
+
+type footstepSample struct {
+	Position model.Vector2
+	TickID   uint64
 }
 
 type spectatorInputEdgeState struct {
@@ -134,6 +145,7 @@ func NewShell(config ShellConfig) *Shell {
 		inputController:         inputController,
 		onInputCommand:          config.OnInputCommand,
 		outgoingCommands:        make([]model.InputCommand, 0, 64),
+		footstepHistory:         make(map[model.PlayerID][]footstepSample),
 	}
 	if config.InputSnapshotProvider != nil {
 		shell.inputSnapshotProvider = config.InputSnapshotProvider
@@ -216,10 +228,13 @@ func (s *Shell) Update() error {
 
 	local, hasLocal := playerByID(state.Players, s.localPlayerID)
 	var localPtr *model.PlayerState
+	var localState model.PlayerState
 	if hasLocal {
-		localCopy := local
-		localPtr = &localCopy
+		localState = local
+		localPtr = &localState
 	}
+	s.recordFootstepHistory(state)
+	s.updateCameraViewSelection(snapshot, state, localPtr)
 
 	s.panelSuppressGameplay = false
 	s.panelSuppressInteract = false
@@ -333,8 +348,100 @@ func (s *Shell) Layout(_, _ int) (int, int) {
 	return s.screenWidth, s.screenHeight
 }
 
+func (s *Shell) recordFootstepHistory(state model.GameState) {
+	if s == nil {
+		return
+	}
+	if s.footstepHistory == nil {
+		s.footstepHistory = make(map[model.PlayerID][]footstepSample)
+	}
+
+	const maxSamplesPerPlayer = 720
+	for _, player := range state.Players {
+		if player.ID == "" || !player.Alive {
+			continue
+		}
+		history := s.footstepHistory[player.ID]
+		if len(history) > 0 && history[len(history)-1].TickID == state.TickID {
+			history[len(history)-1].Position = player.Position
+		} else {
+			history = append(history, footstepSample{
+				Position: player.Position,
+				TickID:   state.TickID,
+			})
+		}
+		if len(history) > maxSamplesPerPlayer {
+			history = append([]footstepSample(nil), history[len(history)-maxSamplesPerPlayer:]...)
+		}
+		s.footstepHistory[player.ID] = history
+	}
+}
+
+func (s *Shell) updateCameraViewSelection(
+	snapshot input.InputSnapshot,
+	state model.GameState,
+	localPlayer *model.PlayerState,
+) {
+	if s == nil {
+		return
+	}
+
+	currentPrev := snapshot.PanelPrevPressed
+	currentNext := snapshot.PanelNextPressed
+	prevEdge := currentPrev && !s.cameraCyclePrevPressed
+	nextEdge := currentNext && !s.cameraCycleNextPressed
+	s.cameraCyclePrevPressed = currentPrev
+	s.cameraCycleNextPressed = currentNext
+
+	if localPlayer == nil || localPlayer.ID == "" {
+		s.cameraViewRoomIndex = 0
+		return
+	}
+	if !effectActiveForPlayer(*localPlayer, model.EffectCameraView, state.TickID) || !state.Map.PowerOn {
+		s.cameraViewRoomIndex = 0
+		return
+	}
+	if actionPanelUsesCenteredModal(s.panelMode) {
+		return
+	}
+
+	rooms := s.cameraViewRooms()
+	if len(rooms) == 0 {
+		s.cameraViewRoomIndex = 0
+		return
+	}
+	s.cameraViewRoomIndex = clampPanelIndex(s.cameraViewRoomIndex, len(rooms))
+	if prevEdge {
+		s.cameraViewRoomIndex = wrapPanelIndex(s.cameraViewRoomIndex, len(rooms), -1)
+	}
+	if nextEdge {
+		s.cameraViewRoomIndex = wrapPanelIndex(s.cameraViewRoomIndex, len(rooms), 1)
+	}
+}
+
+func (s *Shell) cameraViewRooms() []model.RoomID {
+	if s == nil {
+		return nil
+	}
+	rooms := s.layout.Rooms()
+	if len(rooms) == 0 {
+		return nil
+	}
+	out := make([]model.RoomID, 0, len(rooms))
+	for _, room := range rooms {
+		if room.ID == "" {
+			continue
+		}
+		out = append(out, room.ID)
+	}
+	sort.Slice(out, func(i int, j int) bool {
+		return out[i] < out[j]
+	})
+	return out
+}
+
 func (s *Shell) drawRooms(screen *ebiten.Image, state model.GameState) {
-	_, hasLocal, localRoomID, limitToLocalRoom := resolveLocalVisionScope(state, s.localPlayerID)
+	_, hasLocal, localRoomID, limitToLocalRoom := s.resolveVisionScope(state)
 	if !hasLocal {
 		limitToLocalRoom = false
 	}
@@ -362,7 +469,7 @@ func (s *Shell) drawRooms(screen *ebiten.Image, state model.GameState) {
 }
 
 func (s *Shell) drawDoors(screen *ebiten.Image, state model.GameState) {
-	localPlayer, hasLocal, localRoomID, limitToLocalRoom := resolveLocalVisionScope(state, s.localPlayerID)
+	localPlayer, hasLocal, localRoomID, limitToLocalRoom := s.resolveVisionScope(state)
 
 	doorByID := make(map[model.DoorID]model.DoorState, len(state.Map.Doors))
 	for _, door := range state.Map.Doors {
@@ -416,13 +523,18 @@ func (s *Shell) drawDoors(screen *ebiten.Image, state model.GameState) {
 }
 
 func (s *Shell) drawPlayers(screen *ebiten.Image, state model.GameState) {
-	_, hasLocal, localRoomID, limitToLocalRoom := resolveLocalVisionScope(state, s.localPlayerID)
+	localViewer, hasLocal, localRoomID, limitToLocalRoom := s.resolveVisionScope(state)
 	if !hasLocal {
 		limitToLocalRoom = false
 	}
 
+	s.drawTrackerFootsteps(screen, state, localViewer, hasLocal)
+
 	for _, player := range state.Players {
 		if limitToLocalRoom && player.ID != s.localPlayerID && player.CurrentRoomID != localRoomID {
+			continue
+		}
+		if hasLocal && player.ID != s.localPlayerID && playerIsInvisibleForViewer(player, localViewer, state.TickID) {
 			continue
 		}
 
@@ -430,6 +542,11 @@ func (s *Shell) drawPlayers(screen *ebiten.Image, state model.GameState) {
 		x, y, w, h := s.camera.TileRectToScreen(float64(player.Position.X)-(size/2), float64(player.Position.Y)-(size/2), size, size)
 
 		fill := playerFillColor(player)
+		label := string(player.ID)
+		if player.ID != s.localPlayerID && effectActiveForPlayer(player, model.EffectDisguised, state.TickID) {
+			fill = entityFillColor(model.EntityKindNPCPrisoner)
+			label = "NPC"
+		}
 		vector.DrawFilledRect(screen, float32(x), float32(y), float32(w), float32(h), fill, false)
 
 		borderColor := color.RGBA{R: 16, G: 19, B: 24, A: 255}
@@ -445,12 +562,85 @@ func (s *Shell) drawPlayers(screen *ebiten.Image, state model.GameState) {
 		if labelY < 10 {
 			labelY = int(y + h + 11)
 		}
-		text.Draw(screen, string(player.ID), basicfont.Face7x13, labelX, labelY, color.RGBA{R: 232, G: 236, B: 243, A: 255})
+		labelColor := toRGBA(fill)
+		labelColor.A = 255
+		text.Draw(screen, label, basicfont.Face7x13, labelX, labelY, labelColor)
+	}
+}
+
+func (s *Shell) drawTrackerFootsteps(
+	screen *ebiten.Image,
+	state model.GameState,
+	localViewer model.PlayerState,
+	hasLocal bool,
+) {
+	if s == nil || !hasLocal || !effectActiveForPlayer(localViewer, model.EffectTrackerView, state.TickID) {
+		return
+	}
+
+	_, _, visibleRoomID, limitToVisibleRoom := s.resolveVisionScope(state)
+	const trailWindowTicks = 900
+	const maxTrailSamplesPerPlayer = 120
+	cutoffTick := uint64(0)
+	if state.TickID > trailWindowTicks {
+		cutoffTick = state.TickID - trailWindowTicks
+	}
+
+	for _, player := range state.Players {
+		if player.ID == "" || !player.Alive {
+			continue
+		}
+
+		history := s.footstepHistory[player.ID]
+		if len(history) == 0 {
+			continue
+		}
+
+		baseColor := toRGBA(playerFillColor(player))
+		drawn := 0
+		for index := len(history) - 1; index >= 0; index-- {
+			sample := history[index]
+			if sample.TickID < cutoffTick {
+				break
+			}
+			if limitToVisibleRoom && visibleRoomID != "" {
+				point := gamemap.Point{X: int(sample.Position.X), Y: int(sample.Position.Y)}
+				roomID, inRoom := s.layout.RoomAt(point)
+				if !inRoom || roomID != visibleRoomID {
+					continue
+				}
+			}
+
+			ageTicks := state.TickID - sample.TickID
+			fadeRatio := 1.0 - (float64(ageTicks) / float64(trailWindowTicks))
+			if fadeRatio < 0.18 {
+				fadeRatio = 0.18
+			}
+
+			dotColor := baseColor
+			dotColor.A = uint8(32 + (fadeRatio * 140))
+			size := 0.16
+			if player.ID == s.localPlayerID {
+				size = 0.14
+			}
+
+			x, y, w, h := s.camera.TileRectToScreen(
+				float64(sample.Position.X)-(size/2),
+				float64(sample.Position.Y)-(size/2),
+				size,
+				size,
+			)
+			vector.DrawFilledRect(screen, float32(x), float32(y), float32(w), float32(h), dotColor, false)
+			drawn++
+			if drawn >= maxTrailSamplesPerPlayer {
+				break
+			}
+		}
 	}
 }
 
 func (s *Shell) drawEntities(screen *ebiten.Image, state model.GameState) {
-	_, hasLocal, localRoomID, limitToLocalRoom := resolveLocalVisionScope(state, s.localPlayerID)
+	_, hasLocal, localRoomID, limitToLocalRoom := s.resolveVisionScope(state)
 	if !hasLocal {
 		limitToLocalRoom = false
 	}
@@ -487,6 +677,30 @@ func resolveLocalVisionScope(
 	}
 
 	return local, true, localRoomID, true
+}
+
+func (s *Shell) resolveVisionScope(
+	state model.GameState,
+) (localPlayer model.PlayerState, hasLocalPlayer bool, localRoomID model.RoomID, limitToLocalRoom bool) {
+	localPlayer, hasLocalPlayer, localRoomID, limitToLocalRoom = resolveLocalVisionScope(state, s.localPlayerID)
+	if !hasLocalPlayer {
+		return model.PlayerState{}, false, "", false
+	}
+
+	// Camera-man view overrides room-limited fog while the feed effect is active.
+	if effectActiveForPlayer(localPlayer, model.EffectCameraView, state.TickID) && state.Map.PowerOn {
+		rooms := s.cameraViewRooms()
+		if len(rooms) > 0 {
+			s.cameraViewRoomIndex = clampPanelIndex(s.cameraViewRoomIndex, len(rooms))
+			selectedRoom := rooms[s.cameraViewRoomIndex]
+			if selectedRoom != "" {
+				localRoomID = selectedRoom
+				limitToLocalRoom = true
+			}
+		}
+	}
+
+	return localPlayer, hasLocalPlayer, localRoomID, limitToLocalRoom
 }
 
 func projectDoorOpenForViewer(
@@ -533,6 +747,29 @@ func canViewerTraverseDoor(
 	}
 
 	return true
+}
+
+func effectActiveForPlayer(player model.PlayerState, effect model.EffectType, tickID uint64) bool {
+	if effect == "" {
+		return false
+	}
+	for _, active := range player.Effects {
+		if active.Effect != effect {
+			continue
+		}
+		if active.EndsTick != 0 && tickID > active.EndsTick {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func playerIsInvisibleForViewer(target model.PlayerState, viewer model.PlayerState, tickID uint64) bool {
+	if target.ID == "" || target.ID == viewer.ID {
+		return false
+	}
+	return effectActiveForPlayer(target, model.EffectChameleon, tickID)
 }
 
 func doorAdjacentTargetRoom(currentRoomID model.RoomID, door model.DoorState) (model.RoomID, bool) {
@@ -990,7 +1227,7 @@ func (s *Shell) filterSnapshotForActionPanels(snapshot input.InputSnapshot) inpu
 		snapshot.InteractPressed = false
 	}
 
-	if s.panelSuppressGameplay || s.panelMode == actionPanelMarket || s.panelMode == actionPanelEscape {
+	if s.panelSuppressGameplay || actionPanelUsesCenteredModal(s.panelMode) {
 		snapshot.MoveUp = false
 		snapshot.MoveDown = false
 		snapshot.MoveLeft = false
@@ -1014,7 +1251,8 @@ func (s *Shell) drawPauseMenu(screen *ebiten.Image) {
 		"Move: WASD/Arrows | Sprint: Shift",
 		"Aim/Fire: Mouse + Space/LMB",
 		"Interact: E/F | Ability: V | Ability Info: I | Reload: R",
-		"Panels: Tab/C | Escape: X | Market: Interact in market room at night",
+		"Panels: Tab/C | Escape: X | Stash: H in cell block",
+		"Night cards: popup at night (Arrows + Enter)",
 		"Modal select: Arrow keys + Enter (Esc/X close)",
 		"",
 		"Esc or P: Resume",
@@ -1148,7 +1386,7 @@ func entityFillColor(kind model.EntityKind) color.Color {
 func (s *Shell) captureInputSnapshot() input.InputSnapshot {
 	mouseX, mouseY := ebiten.CursorPosition()
 	aimWorldX, aimWorldY := s.camera.ScreenToWorld(mouseX, mouseY)
-	modalOpen := s.panelMode == actionPanelMarket || s.panelMode == actionPanelEscape
+	modalOpen := actionPanelUsesCenteredModal(s.panelMode)
 	panelPrevPressed := ebiten.IsKeyPressed(ebiten.KeyBracketLeft) || ebiten.IsKeyPressed(ebiten.KeyPageUp)
 	panelNextPressed := ebiten.IsKeyPressed(ebiten.KeyBracketRight) || ebiten.IsKeyPressed(ebiten.KeyPageDown)
 	if modalOpen {
@@ -1192,6 +1430,7 @@ func (s *Shell) captureInputSnapshot() input.InputSnapshot {
 		PanelAbilitiesPressed: false,
 		PanelMarketPressed:    ebiten.IsKeyPressed(ebiten.KeyB) || ebiten.IsKeyPressed(ebiten.KeyM),
 		PanelEscapePressed:    ebiten.IsKeyPressed(ebiten.KeyX),
+		PanelStashPressed:     ebiten.IsKeyPressed(ebiten.KeyH),
 		PanelPrevPressed:      panelPrevPressed,
 		PanelNextPressed:      panelNextPressed,
 		PanelUsePressed:       ebiten.IsKeyPressed(ebiten.KeyEnter) || ebiten.IsKeyPressed(ebiten.KeyKPEnter),

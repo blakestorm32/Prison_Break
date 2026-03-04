@@ -251,6 +251,18 @@ func validateInputPayload(commandType model.InputCommandType, payload json.RawMe
 		if msg.MarketRoomID != "" && !gamemap.IsNightlyBlackMarketCandidate(msg.MarketRoomID) {
 			return ErrInvalidInputPayload
 		}
+		if msg.NightCardChoice != "" && !cards.IsKnownCard(msg.NightCardChoice) {
+			return ErrInvalidInputPayload
+		}
+		if msg.StashAction != "" {
+			action := strings.ToLower(strings.TrimSpace(msg.StashAction))
+			if action != "deposit" && action != "withdraw" {
+				return ErrInvalidInputPayload
+			}
+			if msg.StashItem == "" || !items.IsKnownItem(msg.StashItem) {
+				return ErrInvalidInputPayload
+			}
+		}
 		return nil
 	case model.CmdUseAbility:
 		var msg model.AbilityUsePayload
@@ -351,14 +363,7 @@ func validateInputPayload(commandType model.InputCommandType, payload json.RawMe
 }
 
 func validateAbilityUsePayload(payload model.AbilityUsePayload) bool {
-	switch payload.Ability {
-	case model.AbilitySearch, model.AbilityDetainer, model.AbilityTracker, model.AbilityPickPocket:
-		return strings.TrimSpace(string(payload.TargetPlayerID)) != ""
-	case model.AbilityLocksmith:
-		return payload.TargetDoorID != 0
-	default:
-		return true
-	}
+	return strings.TrimSpace(string(payload.Ability)) != ""
 }
 
 func validateCardUsePayload(payload model.CardUsePayload) bool {

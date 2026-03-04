@@ -10,6 +10,9 @@ import (
 
 func TestDefaultPrisonLayoutContainsExpectedRoomsAndRestrictedZones(t *testing.T) {
 	layout := DefaultPrisonLayout()
+	if layout.Width() != 76 || layout.Height() != 44 {
+		t.Fatalf("expected default layout dimensions 76x44, got %dx%d", layout.Width(), layout.Height())
+	}
 
 	expectedRooms := []model.RoomID{
 		RoomCorridorMain,

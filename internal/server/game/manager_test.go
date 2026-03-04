@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"prison-break/internal/engine/physics"
+	"prison-break/internal/gamecore/abilities"
 	gamemap "prison-break/internal/gamecore/map"
 	"prison-break/internal/shared/model"
 )
@@ -134,13 +136,15 @@ func TestStartMatchAssignsDeterministicCellOwnership(t *testing.T) {
 		if player.AssignedCell == 0 {
 			t.Fatalf("expected assigned cell for player %s", player.ID)
 		}
-		if player.CurrentRoomID != gamemap.RoomCellBlockA {
-			t.Fatalf(
-				"expected player %s start room %s, got %s",
-				player.ID,
-				gamemap.RoomCellBlockA,
-				player.CurrentRoomID,
-			)
+		expectedRoom := gamemap.RoomCellBlockA
+		switch player.Role {
+		case model.RoleWarden:
+			expectedRoom = gamemap.RoomWardenHQ
+		case model.RoleDeputy:
+			expectedRoom = gamemap.RoomAmmoRoom
+		}
+		if player.CurrentRoomID != expectedRoom {
+			t.Fatalf("expected player %s role %s start room %s, got %s", player.ID, player.Role, expectedRoom, player.CurrentRoomID)
 		}
 		if _, duplicate := assigned[player.AssignedCell]; duplicate {
 			t.Fatalf("duplicate assigned cell %d", player.AssignedCell)
@@ -210,6 +214,69 @@ func TestStartMatchAssignsRolesForSixPlayers(t *testing.T) {
 	}
 	if gangLeaderCount != 1 {
 		t.Fatalf("expected one gang leader, got %d", gangLeaderCount)
+	}
+}
+
+func TestStartMatchAssignsDeterministicAbilityPerPlayer(t *testing.T) {
+	newManagerAndMatch := func() (*Manager, model.MatchID) {
+		manager, _, _ := newTestManager(
+			Config{
+				MinPlayers:    4,
+				MaxPlayers:    6,
+				TickRateHz:    30,
+				MatchIDPrefix: "ability",
+			},
+			time.Date(2026, 2, 22, 12, 0, 0, 0, time.UTC),
+		)
+
+		match := manager.CreateMatch()
+		for _, playerID := range []model.PlayerID{"p1", "p2", "p3", "p4"} {
+			if _, err := manager.JoinMatch(match.MatchID, playerID, string(playerID)); err != nil {
+				t.Fatalf("join %s failed: %v", playerID, err)
+			}
+		}
+		if _, err := manager.StartMatch(match.MatchID); err != nil {
+			t.Fatalf("start failed: %v", err)
+		}
+		return manager, match.MatchID
+	}
+
+	managerA, matchA := newManagerAndMatch()
+	t.Cleanup(managerA.Close)
+	managerB, matchB := newManagerAndMatch()
+	t.Cleanup(managerB.Close)
+
+	fullA, err := managerA.FullSnapshot(matchA)
+	if err != nil {
+		t.Fatalf("snapshot A failed: %v", err)
+	}
+	fullB, err := managerB.FullSnapshot(matchB)
+	if err != nil {
+		t.Fatalf("snapshot B failed: %v", err)
+	}
+	if fullA.State == nil || fullB.State == nil {
+		t.Fatalf("expected both snapshots to include full state")
+	}
+
+	assignedA := make(map[model.PlayerID]model.AbilityType, len(fullA.State.Players))
+	for _, player := range fullA.State.Players {
+		if player.AssignedAbility == "" {
+			t.Fatalf("expected player %s to have assigned ability", player.ID)
+		}
+		if !abilities.CanPlayerUse(player, player.AssignedAbility) {
+			t.Fatalf("expected assigned ability %s to be valid for player %+v", player.AssignedAbility, player)
+		}
+		assignedA[player.ID] = player.AssignedAbility
+	}
+
+	for _, player := range fullB.State.Players {
+		expected, exists := assignedA[player.ID]
+		if !exists {
+			t.Fatalf("expected player %s in deterministic comparison set", player.ID)
+		}
+		if player.AssignedAbility != expected {
+			t.Fatalf("expected deterministic assigned ability for player %s to be %s, got %s", player.ID, expected, player.AssignedAbility)
+		}
 	}
 }
 
@@ -407,32 +474,89 @@ func TestMoveIntentCollisionWithClosedDoorThenOpenDoor(t *testing.T) {
 		t.Fatalf("start failed: %v", err)
 	}
 
-	setPlayerPositionForTest(manager, match.MatchID, "p1", model.Vector2{X: 4, Y: 10})
+	startPosition, moveX, moveY := approachDoorForManagerTest(t, 7, gamemap.RoomCorridorMain)
+	setPlayerPositionForTest(manager, match.MatchID, "p1", startPosition)
 	setPlayerRoomForTest(manager, match.MatchID, "p1", gamemap.RoomCorridorMain)
-	setDoorOpenForTest(manager, match.MatchID, 1, false)
+	setDoorOpenForTest(manager, match.MatchID, 7, false)
 
 	ticker := factory.Last()
 	if ticker == nil {
 		t.Fatalf("expected ticker after start")
 	}
 
-	mustSubmitMoveIntent(t, manager, match.MatchID, "p1", 1, 0, -1, false)
+	mustSubmitMoveIntent(t, manager, match.MatchID, "p1", 1, moveX, moveY, false)
 	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 1, 0, time.UTC))
 	waitForTick(t, manager, match.MatchID, 1)
 
 	closedPosition := playerPositionForTest(manager, match.MatchID, "p1")
-	if closedPosition != (model.Vector2{X: 4, Y: 10}) {
+	if closedPosition != startPosition {
 		t.Fatalf("expected closed door to block movement, got %+v", closedPosition)
 	}
 
-	setDoorOpenForTest(manager, match.MatchID, 1, true)
-	mustSubmitMoveIntent(t, manager, match.MatchID, "p1", 2, 0, -1, false)
+	setDoorOpenForTest(manager, match.MatchID, 7, true)
+	mustSubmitMoveIntent(t, manager, match.MatchID, "p1", 2, moveX, moveY, false)
 	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 2, 0, time.UTC))
 	waitForTick(t, manager, match.MatchID, 2)
 
 	openPosition := playerPositionForTest(manager, match.MatchID, "p1")
-	if openPosition.Y >= 10 {
-		t.Fatalf("expected open door to allow north movement, got %+v", openPosition)
+	if openPosition == startPosition {
+		t.Fatalf("expected open door to allow movement through doorway, got %+v", openPosition)
+	}
+}
+
+func TestMoveIntentRespectsRoomAccessRestrictions(t *testing.T) {
+	manager, _, factory := newTestManager(
+		Config{
+			MinPlayers:    1,
+			MaxPlayers:    4,
+			TickRateHz:    30,
+			MatchIDPrefix: "mv-access",
+		},
+		time.Date(2026, 2, 22, 12, 0, 0, 0, time.UTC),
+	)
+
+	match := manager.CreateMatch()
+	if _, err := manager.JoinMatch(match.MatchID, "p1", "Mover"); err != nil {
+		t.Fatalf("join failed: %v", err)
+	}
+	if _, err := manager.StartMatch(match.MatchID); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+
+	startPosition, moveX, moveY := approachDoorForManagerTest(t, 1, gamemap.RoomCorridorMain)
+	setPlayerRoleAndFactionForTest(manager, match.MatchID, "p1", model.RoleGangMember, model.FactionPrisoner)
+	setPlayerPositionForTest(manager, match.MatchID, "p1", startPosition)
+	setPlayerRoomForTest(manager, match.MatchID, "p1", gamemap.RoomCorridorMain)
+	setDoorOpenForTest(manager, match.MatchID, 1, true)
+
+	ticker := factory.Last()
+	if ticker == nil {
+		t.Fatalf("expected ticker after start")
+	}
+
+	mustSubmitMoveIntent(t, manager, match.MatchID, "p1", 1, moveX, moveY, false)
+	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 1, 0, time.UTC))
+	waitForTick(t, manager, match.MatchID, 1)
+
+	blockedPosition := playerPositionForTest(manager, match.MatchID, "p1")
+	if blockedPosition != startPosition {
+		t.Fatalf("expected non-warden entry into warden_hq to be blocked, got %+v", blockedPosition)
+	}
+	if room := playerRoomForTest(manager, match.MatchID, "p1"); room != gamemap.RoomCorridorMain {
+		t.Fatalf("expected room to remain corridor_main after denied entry, got %s", room)
+	}
+
+	setPlayerRoleAndFactionForTest(manager, match.MatchID, "p1", model.RoleWarden, model.FactionAuthority)
+	mustSubmitMoveIntent(t, manager, match.MatchID, "p1", 2, moveX, moveY, false)
+	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 2, 0, time.UTC))
+	waitForTick(t, manager, match.MatchID, 2)
+
+	allowedPosition := playerPositionForTest(manager, match.MatchID, "p1")
+	if allowedPosition == startPosition {
+		t.Fatalf("expected warden to enter warden_hq, got %+v", allowedPosition)
+	}
+	if room := playerRoomForTest(manager, match.MatchID, "p1"); room != gamemap.RoomWardenHQ {
+		t.Fatalf("expected room transition into warden_hq, got %s", room)
 	}
 }
 
@@ -458,8 +582,14 @@ func TestMoveIntentBlockedByPlayerAndStunPreventsMotion(t *testing.T) {
 		t.Fatalf("start failed: %v", err)
 	}
 
-	setPlayerPositionForTest(manager, match.MatchID, "p1", model.Vector2{X: 3, Y: 14})
 	setPlayerPositionForTest(manager, match.MatchID, "p2", model.Vector2{X: 4, Y: 14})
+	startPosition := edgeApproachPositionForManagerStep(gamemap.Point{X: 3, Y: 14}, 1, 0, physics.BaseMoveStepPerTick)
+	setPlayerPositionForTest(
+		manager,
+		match.MatchID,
+		"p1",
+		startPosition,
+	)
 	setPlayerRoomForTest(manager, match.MatchID, "p1", gamemap.RoomCellBlockA)
 	setPlayerRoomForTest(manager, match.MatchID, "p2", gamemap.RoomCellBlockA)
 
@@ -472,7 +602,7 @@ func TestMoveIntentBlockedByPlayerAndStunPreventsMotion(t *testing.T) {
 	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 1, 0, time.UTC))
 	waitForTick(t, manager, match.MatchID, 1)
 
-	if position := playerPositionForTest(manager, match.MatchID, "p1"); position != (model.Vector2{X: 3, Y: 14}) {
+	if position := playerPositionForTest(manager, match.MatchID, "p1"); position != startPosition {
 		t.Fatalf("expected occupied tile collision to block movement, got %+v", position)
 	}
 
@@ -483,7 +613,7 @@ func TestMoveIntentBlockedByPlayerAndStunPreventsMotion(t *testing.T) {
 	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 2, 0, time.UTC))
 	waitForTick(t, manager, match.MatchID, 2)
 
-	if position := playerPositionForTest(manager, match.MatchID, "p1"); position != (model.Vector2{X: 3, Y: 14}) {
+	if position := playerPositionForTest(manager, match.MatchID, "p1"); position != startPosition {
 		t.Fatalf("expected stunned player to remain in place, got %+v", position)
 	}
 	if velocity := playerVelocityForTest(manager, match.MatchID, "p1"); velocity != (model.Vector2{}) {
@@ -523,12 +653,17 @@ func TestApplyKnockbackAppliesDisplacementAndStun(t *testing.T) {
 		t.Fatalf("expected stunned until tick 3, got %d", player.StunnedUntilTick)
 	}
 
-	setPlayerPositionForTest(manager, match.MatchID, "p1", model.Vector2{X: 2, Y: 13})
+	cellBlock, exists := defaultMatchLayout.Room(gamemap.RoomCellBlockA)
+	if !exists {
+		t.Fatalf("expected cell block room in default layout")
+	}
+	wallStart := model.Vector2{X: float32(cellBlock.Min.X), Y: float32(cellBlock.Min.Y + 1)}
+	setPlayerPositionForTest(manager, match.MatchID, "p1", wallStart)
 	player, err = manager.ApplyKnockback(match.MatchID, "p1", model.Vector2{X: -1, Y: 0}, 1)
 	if err != nil {
 		t.Fatalf("apply wall knockback failed: %v", err)
 	}
-	if player.Position != (model.Vector2{X: 2, Y: 13}) {
+	if player.Position != wallStart {
 		t.Fatalf("expected wall collision to block knockback, got %+v", player.Position)
 	}
 	if player.StunnedUntilTick != 3 {
@@ -1518,6 +1653,26 @@ func setPlayerRoleAndFactionForTest(
 		}
 		session.gameState.Players[idx].Role = role
 		session.gameState.Players[idx].Faction = faction
+		session.gameState.Players[idx].AssignedAbility = ""
+		return
+	}
+}
+
+func setPlayerAssignedAbilityForTest(
+	manager *Manager,
+	matchID model.MatchID,
+	playerID model.PlayerID,
+	ability model.AbilityType,
+) {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+
+	session := manager.matches[matchID]
+	for idx := range session.gameState.Players {
+		if session.gameState.Players[idx].ID != playerID {
+			continue
+		}
+		session.gameState.Players[idx].AssignedAbility = ability
 		return
 	}
 }
@@ -1627,6 +1782,95 @@ func setPlayerStunnedUntilForTest(
 	}
 }
 
+func approachDoorForManagerTest(
+	t *testing.T,
+	doorID model.DoorID,
+	fromRoomID model.RoomID,
+) (model.Vector2, float32, float32) {
+	t.Helper()
+
+	var link gamemap.DoorLink
+	found := false
+	for _, candidate := range defaultMatchLayout.DoorLinks() {
+		if candidate.ID == doorID {
+			link = candidate
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("door %d not found", doorID)
+	}
+
+	directions := []gamemap.Point{
+		{X: 0, Y: -1},
+		{X: 0, Y: 1},
+		{X: -1, Y: 0},
+		{X: 1, Y: 0},
+	}
+	doorRoomID, doorRoomExists := defaultMatchLayout.RoomAt(link.Position)
+	if doorRoomExists && doorRoomID == fromRoomID {
+		for _, direction := range directions {
+			neighbor := gamemap.Point{
+				X: link.Position.X + direction.X,
+				Y: link.Position.Y + direction.Y,
+			}
+			roomID, exists := defaultMatchLayout.RoomAt(neighbor)
+			if !exists || roomID == "" || roomID == fromRoomID {
+				continue
+			}
+			moveX := float32(neighbor.X - link.Position.X)
+			moveY := float32(neighbor.Y - link.Position.Y)
+			position := edgeApproachPositionForManagerStep(link.Position, moveX, moveY, physics.BaseMoveStepPerTick)
+			return position, moveX, moveY
+		}
+	}
+
+	for _, direction := range directions {
+		neighbor := gamemap.Point{
+			X: link.Position.X + direction.X,
+			Y: link.Position.Y + direction.Y,
+		}
+		roomID, exists := defaultMatchLayout.RoomAt(neighbor)
+		if !exists || roomID != fromRoomID {
+			continue
+		}
+		moveX := float32(link.Position.X - neighbor.X)
+		moveY := float32(link.Position.Y - neighbor.Y)
+		position := edgeApproachPositionForManagerStep(neighbor, moveX, moveY, physics.BaseMoveStepPerTick)
+		return position, moveX, moveY
+	}
+
+	t.Fatalf("door %d has no adjacent tile in room %s", doorID, fromRoomID)
+	return model.Vector2{}, 0, 0
+}
+
+func edgeApproachPositionForManagerStep(
+	fromTile gamemap.Point,
+	moveX float32,
+	moveY float32,
+	step float32,
+) model.Vector2 {
+	shift := float32(0.01)
+	if step > 0 && step < 0.49 {
+		shift = 0.5 - step + 0.01
+	}
+
+	x := float32(fromTile.X)
+	y := float32(fromTile.Y)
+	if moveX > 0 {
+		x += shift
+	} else if moveX < 0 {
+		x -= shift
+	}
+	if moveY > 0 {
+		y += shift
+	} else if moveY < 0 {
+		y -= shift
+	}
+	return model.Vector2{X: x, Y: y}
+}
+
 func setPlayerAliveForTest(
 	manager *Manager,
 	matchID model.MatchID,
@@ -1657,6 +1901,19 @@ func playerAssignedCellForTest(manager *Manager, matchID model.MatchID, playerID
 		}
 	}
 	return 0
+}
+
+func playerAssignedAbilityForTest(manager *Manager, matchID model.MatchID, playerID model.PlayerID) model.AbilityType {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+
+	session := manager.matches[matchID]
+	for _, player := range session.gameState.Players {
+		if player.ID == playerID {
+			return player.AssignedAbility
+		}
+	}
+	return ""
 }
 
 func doorIDForCellForTest(manager *Manager, matchID model.MatchID, cellID model.CellID) model.DoorID {

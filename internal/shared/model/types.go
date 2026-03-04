@@ -148,6 +148,8 @@ const (
 	EffectTracked    EffectType = "tracked"
 	EffectDisguised  EffectType = "disguised"
 	EffectChameleon  EffectType = "chameleon"
+	EffectCameraView EffectType = "camera_view"
+	EffectTrackerView EffectType = "tracker_view"
 )
 
 type EscapeRouteType string

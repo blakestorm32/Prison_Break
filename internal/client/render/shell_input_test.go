@@ -1,6 +1,7 @@
 package render
 
 import (
+	"encoding/json"
 	"testing"
 
 	"prison-break/internal/client/input"
@@ -189,5 +190,66 @@ func TestShellShowsMobileActionSurfacesOnNarrowScreen(t *testing.T) {
 
 	if !shell.shouldShowMobileActionSurfaces() {
 		t.Fatalf("expected narrow-screen shell to show mobile action surfaces")
+	}
+}
+
+func TestShellUpdateAbilityPressedQueuesUseAbilityCommand(t *testing.T) {
+	store := netclient.NewSnapshotStore()
+	state := model.GameState{
+		MatchID: "m-ability-input",
+		TickID:  3,
+		Status:  model.MatchStatusRunning,
+		Map:     gamemap.DefaultPrisonLayout().ToMapState(),
+		Players: []model.PlayerState{
+			{
+				ID:              "p1",
+				Alive:           true,
+				Role:            model.RoleGangMember,
+				Faction:         model.FactionPrisoner,
+				AssignedAbility: model.AbilityDisguise,
+				Position:        model.Vector2{X: 6, Y: 6},
+			},
+		},
+	}
+	if !store.ApplySnapshot(model.Snapshot{
+		Kind:   model.SnapshotKindFull,
+		TickID: state.TickID,
+		State:  &state,
+	}) {
+		t.Fatalf("expected baseline state apply")
+	}
+
+	shell := NewShell(ShellConfig{
+		ScreenWidth:   1280,
+		ScreenHeight:  720,
+		LocalPlayerID: "p1",
+		Store:         store,
+		Layout:        gamemap.DefaultPrisonLayout(),
+		InputController: input.NewController(input.ControllerConfig{
+			PlayerID: "p1",
+		}),
+		InputSnapshotProvider: func() input.InputSnapshot {
+			return input.InputSnapshot{
+				AbilityPressed: true,
+			}
+		},
+	})
+
+	if err := shell.Update(); err != nil {
+		t.Fatalf("update failed: %v", err)
+	}
+
+	commands := shell.DrainOutgoingCommands()
+	useAbility, found := findCommandByType(commands, model.CmdUseAbility)
+	if !found {
+		t.Fatalf("expected use-ability command when ability button is pressed, got %+v", commands)
+	}
+
+	var payload model.AbilityUsePayload
+	if err := json.Unmarshal(useAbility.Payload, &payload); err != nil {
+		t.Fatalf("decode ability payload: %v", err)
+	}
+	if payload.Ability != model.AbilityDisguise {
+		t.Fatalf("expected assigned disguise ability payload, got %+v", payload)
 	}
 }

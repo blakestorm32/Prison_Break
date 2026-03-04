@@ -40,10 +40,20 @@ func TestResolveMoveIntentMovesOnWalkableTiles(t *testing.T) {
 func TestResolveMoveIntentBlocksOnWallAndOutOfBounds(t *testing.T) {
 	layout := gamemap.DefaultPrisonLayout()
 	mapState := layout.ToMapState()
+	cellBlock, exists := layout.Room(gamemap.RoomCellBlockA)
+	if !exists {
+		t.Fatalf("expected cell block room in default layout")
+	}
+	wallApproach := edgeApproachPositionForStep(
+		gamemap.Point{X: cellBlock.Min.X, Y: cellBlock.Min.Y + 1},
+		-1,
+		0,
+		BaseMoveStepPerTick,
+	)
 
 	player := model.PlayerState{
 		ID:       "p1",
-		Position: model.Vector2{X: 2, Y: 13},
+		Position: wallApproach,
 	}
 
 	occupied := BuildOccupiedTiles([]model.PlayerState{player})
@@ -62,7 +72,7 @@ func TestResolveMoveIntentBlocksOnWallAndOutOfBounds(t *testing.T) {
 		t.Fatalf("expected wall collision to set BlockedByMap")
 	}
 
-	player.Position = model.Vector2{X: 1, Y: 1}
+	player.Position = edgeApproachPositionForStep(gamemap.Point{X: 1, Y: 1}, -1, 0, BaseMoveStepPerTick)
 	occupied = BuildOccupiedTiles([]model.PlayerState{player})
 	outResult := ResolveMoveIntent(
 		player,
@@ -84,16 +94,18 @@ func TestResolveMoveIntentBlocksOnClosedDoorAndAllowsOpenDoor(t *testing.T) {
 	layout := gamemap.DefaultPrisonLayout()
 	mapState := layout.ToMapState()
 
+	playerPosition, moveX, moveY := approachDoorForTest(t, layout, 7, gamemap.RoomCorridorMain)
 	player := model.PlayerState{
-		ID:       "p1",
-		Position: model.Vector2{X: 4, Y: 10},
+		ID:            "p1",
+		CurrentRoomID: gamemap.RoomCorridorMain,
+		Position:      playerPosition,
 	}
 	occupied := BuildOccupiedTiles([]model.PlayerState{player})
 
-	setDoorOpen(&mapState, 1, false)
+	setDoorOpen(&mapState, 7, false)
 	closedResult := ResolveMoveIntent(
 		player,
-		model.MovementInputPayload{MoveX: 0, MoveY: -1},
+		model.MovementInputPayload{MoveX: moveX, MoveY: moveY},
 		layout,
 		mapState,
 		occupied,
@@ -102,15 +114,15 @@ func TestResolveMoveIntentBlocksOnClosedDoorAndAllowsOpenDoor(t *testing.T) {
 	if closedResult.Moved {
 		t.Fatalf("expected closed door to block movement")
 	}
-	if closedResult.BlockedByDoorID != 1 {
-		t.Fatalf("expected door id 1 block, got %#v", closedResult)
+	if closedResult.BlockedByDoorID != 7 {
+		t.Fatalf("expected door id 7 block, got %#v", closedResult)
 	}
 
-	setDoorOpen(&mapState, 1, true)
+	setDoorOpen(&mapState, 7, true)
 	occupied = BuildOccupiedTiles([]model.PlayerState{player})
 	openResult := ResolveMoveIntent(
 		player,
-		model.MovementInputPayload{MoveX: 0, MoveY: -1},
+		model.MovementInputPayload{MoveX: moveX, MoveY: moveY},
 		layout,
 		mapState,
 		occupied,
@@ -124,13 +136,140 @@ func TestResolveMoveIntentBlocksOnClosedDoorAndAllowsOpenDoor(t *testing.T) {
 	}
 }
 
+func TestResolveMoveIntentBlocksRestrictedRoomEntryByRole(t *testing.T) {
+	layout := gamemap.DefaultPrisonLayout()
+	mapState := layout.ToMapState()
+	setDoorOpen(&mapState, 1, true)
+	playerPosition, moveX, moveY := approachDoorForTest(t, layout, 1, gamemap.RoomCorridorMain)
+
+	prisoner := model.PlayerState{
+		ID:            "prisoner",
+		Role:          model.RoleGangMember,
+		Faction:       model.FactionPrisoner,
+		CurrentRoomID: gamemap.RoomCorridorMain,
+		Position:      playerPosition,
+	}
+
+	occupied := BuildOccupiedTiles([]model.PlayerState{prisoner})
+	blocked := ResolveMoveIntent(
+		prisoner,
+		model.MovementInputPayload{MoveX: moveX, MoveY: moveY},
+		layout,
+		mapState,
+		occupied,
+		10,
+	)
+	if blocked.Moved {
+		t.Fatalf("expected prisoner blocked from entering warden_hq")
+	}
+	if !blocked.BlockedByMap {
+		t.Fatalf("expected access-denied move to mark blocked-by-map")
+	}
+
+	warden := model.PlayerState{
+		ID:            "warden",
+		Role:          model.RoleWarden,
+		Faction:       model.FactionAuthority,
+		CurrentRoomID: gamemap.RoomCorridorMain,
+		Position:      playerPosition,
+	}
+	occupied = BuildOccupiedTiles([]model.PlayerState{warden})
+	allowed := ResolveMoveIntent(
+		warden,
+		model.MovementInputPayload{MoveX: moveX, MoveY: moveY},
+		layout,
+		mapState,
+		occupied,
+		10,
+	)
+	if !allowed.Moved {
+		t.Fatalf("expected warden to enter warden_hq")
+	}
+}
+
+func TestResolveMoveIntentAllowsExitFromCameraRoomWhenPowerOff(t *testing.T) {
+	layout := gamemap.DefaultPrisonLayout()
+	mapState := layout.ToMapState()
+	mapState.PowerOn = false
+	setDoorOpen(&mapState, 2, true)
+	playerPosition, moveX, moveY := approachDoorForTest(t, layout, 2, gamemap.RoomCameraRoom)
+
+	deputy := model.PlayerState{
+		ID:            "deputy",
+		Role:          model.RoleDeputy,
+		Faction:       model.FactionAuthority,
+		CurrentRoomID: gamemap.RoomCameraRoom,
+		Position:      playerPosition,
+	}
+
+	occupied := BuildOccupiedTiles([]model.PlayerState{deputy})
+	result := ResolveMoveIntent(
+		deputy,
+		model.MovementInputPayload{MoveX: moveX, MoveY: moveY},
+		layout,
+		mapState,
+		occupied,
+		10,
+	)
+	if !result.Moved {
+		t.Fatalf("expected movement out of camera room toward corridor to remain allowed when power off")
+	}
+}
+
+func TestResolveMoveIntentRespectsBlackMarketPrisonerOnlyRule(t *testing.T) {
+	layout := gamemap.DefaultPrisonLayout()
+	mapState := layout.ToMapState()
+	setDoorOpen(&mapState, 9, true)
+	playerPosition, moveX, moveY := approachDoorForTest(t, layout, 9, gamemap.RoomCorridorMain)
+
+	authority := model.PlayerState{
+		ID:            "deputy",
+		Role:          model.RoleDeputy,
+		Faction:       model.FactionAuthority,
+		CurrentRoomID: gamemap.RoomCorridorMain,
+		Position:      playerPosition,
+	}
+	occupied := BuildOccupiedTiles([]model.PlayerState{authority})
+	authorityResult := ResolveMoveIntent(
+		authority,
+		model.MovementInputPayload{MoveX: moveX, MoveY: moveY},
+		layout,
+		mapState,
+		occupied,
+		10,
+	)
+	if authorityResult.Moved {
+		t.Fatalf("expected authority blocked from entering black market")
+	}
+
+	prisoner := model.PlayerState{
+		ID:            "gang",
+		Role:          model.RoleGangMember,
+		Faction:       model.FactionPrisoner,
+		CurrentRoomID: gamemap.RoomCorridorMain,
+		Position:      playerPosition,
+	}
+	occupied = BuildOccupiedTiles([]model.PlayerState{prisoner})
+	prisonerResult := ResolveMoveIntent(
+		prisoner,
+		model.MovementInputPayload{MoveX: moveX, MoveY: moveY},
+		layout,
+		mapState,
+		occupied,
+		10,
+	)
+	if !prisonerResult.Moved {
+		t.Fatalf("expected prisoner allowed to enter black market")
+	}
+}
+
 func TestResolveMoveIntentBlocksOnOccupiedTile(t *testing.T) {
 	layout := gamemap.DefaultPrisonLayout()
 	mapState := layout.ToMapState()
 
 	mover := model.PlayerState{
 		ID:       "p1",
-		Position: model.Vector2{X: 3, Y: 14},
+		Position: edgeApproachPositionForStep(gamemap.Point{X: 3, Y: 14}, 1, 0, BaseMoveStepPerTick),
 	}
 	blocker := model.PlayerState{
 		ID:       "p2",
@@ -303,4 +442,94 @@ func setDoorOpen(mapState *model.MapState, doorID model.DoorID, open bool) {
 			return
 		}
 	}
+}
+
+func approachDoorForTest(
+	t *testing.T,
+	layout gamemap.Layout,
+	doorID model.DoorID,
+	fromRoomID model.RoomID,
+) (model.Vector2, float32, float32) {
+	t.Helper()
+
+	var link gamemap.DoorLink
+	found := false
+	for _, candidate := range layout.DoorLinks() {
+		if candidate.ID == doorID {
+			link = candidate
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("door %d not found in layout", doorID)
+	}
+
+	directions := []gamemap.Point{
+		{X: 0, Y: -1},
+		{X: 0, Y: 1},
+		{X: -1, Y: 0},
+		{X: 1, Y: 0},
+	}
+	doorRoomID, doorRoomExists := layout.RoomAt(link.Position)
+	if doorRoomExists && doorRoomID == fromRoomID {
+		for _, direction := range directions {
+			neighbor := gamemap.Point{
+				X: link.Position.X + direction.X,
+				Y: link.Position.Y + direction.Y,
+			}
+			roomID, exists := layout.RoomAt(neighbor)
+			if !exists || roomID == "" || roomID == fromRoomID {
+				continue
+			}
+			moveX := float32(neighbor.X - link.Position.X)
+			moveY := float32(neighbor.Y - link.Position.Y)
+			position := edgeApproachPositionForStep(link.Position, moveX, moveY, BaseMoveStepPerTick)
+			return position, moveX, moveY
+		}
+	}
+
+	for _, direction := range directions {
+		neighbor := gamemap.Point{
+			X: link.Position.X + direction.X,
+			Y: link.Position.Y + direction.Y,
+		}
+		roomID, exists := layout.RoomAt(neighbor)
+		if !exists || roomID != fromRoomID {
+			continue
+		}
+		moveX := float32(link.Position.X - neighbor.X)
+		moveY := float32(link.Position.Y - neighbor.Y)
+		position := edgeApproachPositionForStep(neighbor, moveX, moveY, BaseMoveStepPerTick)
+		return position, moveX, moveY
+	}
+
+	t.Fatalf("door %d has no adjacent tile in room %s", doorID, fromRoomID)
+	return model.Vector2{}, 0, 0
+}
+
+func edgeApproachPositionForStep(
+	fromTile gamemap.Point,
+	moveX float32,
+	moveY float32,
+	step float32,
+) model.Vector2 {
+	shift := float32(0.01)
+	if step > 0 && step < 0.49 {
+		shift = 0.5 - step + 0.01
+	}
+
+	x := float32(fromTile.X)
+	y := float32(fromTile.Y)
+	if moveX > 0 {
+		x += shift
+	} else if moveX < 0 {
+		x -= shift
+	}
+	if moveY > 0 {
+		y += shift
+	} else if moveY < 0 {
+		y -= shift
+	}
+	return model.Vector2{X: x, Y: y}
 }

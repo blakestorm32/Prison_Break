@@ -27,6 +27,20 @@ var knownCards = map[model.CardType]struct{}{
 	model.CardGetOutOfJailFree: {},
 }
 
+var knownCardCatalog = []model.CardType{
+	model.CardMorphine,
+	model.CardBullet,
+	model.CardMoney,
+	model.CardSpeed,
+	model.CardArmorPlate,
+	model.CardLockSnap,
+	model.CardItemSteal,
+	model.CardItemGrab,
+	model.CardScrapBundle,
+	model.CardDoorStop,
+	model.CardGetOutOfJailFree,
+}
+
 var deterministicGrabPool = []model.ItemType{
 	model.ItemWood,
 	model.ItemMetalSlab,
@@ -39,6 +53,12 @@ var deterministicGrabPool = []model.ItemType{
 func IsKnownCard(card model.CardType) bool {
 	_, exists := knownCards[card]
 	return exists
+}
+
+func KnownCards() []model.CardType {
+	out := make([]model.CardType, len(knownCardCatalog))
+	copy(out, knownCardCatalog)
+	return out
 }
 
 func HasCard(player model.PlayerState, card model.CardType) bool {

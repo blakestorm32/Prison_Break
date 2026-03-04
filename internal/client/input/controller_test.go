@@ -115,6 +115,51 @@ func TestControllerActionButtonsAreEdgeTriggered(t *testing.T) {
 	}
 }
 
+func TestControllerAbilityButtonIsEdgeTriggeredAndUsesAssignedAbility(t *testing.T) {
+	controller := NewController(ControllerConfig{
+		PlayerID: "p1",
+	})
+
+	local := &model.PlayerState{
+		ID:              "p1",
+		Role:            model.RoleGangMember,
+		Faction:         model.FactionPrisoner,
+		AssignedAbility: model.AbilityDisguise,
+	}
+
+	first := controller.BuildCommands(InputSnapshot{
+		AbilityPressed: true,
+	}, 0, local)
+	if len(first) != 1 || first[0].Type != model.CmdUseAbility {
+		t.Fatalf("expected first ability press to emit one use-ability command, got %+v", first)
+	}
+
+	var payload model.AbilityUsePayload
+	mustDecodePayload(t, first[0].Payload, &payload)
+	if payload.Ability != model.AbilityDisguise {
+		t.Fatalf("expected assigned ability disguise in payload, got %+v", payload)
+	}
+
+	second := controller.BuildCommands(InputSnapshot{
+		AbilityPressed: true,
+	}, 0, local)
+	if len(second) != 0 {
+		t.Fatalf("expected held ability button to not retrigger, got %+v", second)
+	}
+
+	third := controller.BuildCommands(InputSnapshot{}, 0, local)
+	if len(third) != 0 {
+		t.Fatalf("expected release frame to emit no ability command, got %+v", third)
+	}
+
+	fourth := controller.BuildCommands(InputSnapshot{
+		AbilityPressed: true,
+	}, 0, local)
+	if len(fourth) != 1 || fourth[0].Type != model.CmdUseAbility {
+		t.Fatalf("expected ability press after release to retrigger once, got %+v", fourth)
+	}
+}
+
 func TestControllerTouchJoystickAndButtons(t *testing.T) {
 	layout := DefaultMobileLayout(1000, 600)
 	controller := NewController(ControllerConfig{

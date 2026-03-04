@@ -31,6 +31,10 @@ type InteractPayload struct {
 	TargetRoomID   RoomID          `json:"target_room_id,omitempty"`
 	EscapeRoute    EscapeRouteType `json:"escape_route,omitempty"`
 	MarketRoomID   RoomID          `json:"market_room_id,omitempty"`
+	NightCardChoice CardType       `json:"night_card_choice,omitempty"`
+	StashAction     string         `json:"stash_action,omitempty"`
+	StashItem       ItemType       `json:"stash_item,omitempty"`
+	StashAmount     uint8          `json:"stash_amount,omitempty"`
 }
 
 type AbilityUsePayload struct {

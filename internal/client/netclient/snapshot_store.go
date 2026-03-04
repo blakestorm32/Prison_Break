@@ -268,11 +268,13 @@ func upsertCells(existing []model.CellState, changed []model.CellState) []model.
 	for _, cell := range existing {
 		clone := cell
 		clone.OccupantPlayerIDs = append([]model.PlayerID(nil), cell.OccupantPlayerIDs...)
+		clone.Stash = append([]model.ItemStack(nil), cell.Stash...)
 		byID[cell.ID] = clone
 	}
 	for _, cell := range changed {
 		clone := cell
 		clone.OccupantPlayerIDs = append([]model.PlayerID(nil), cell.OccupantPlayerIDs...)
+		clone.Stash = append([]model.ItemStack(nil), cell.Stash...)
 		byID[cell.ID] = clone
 	}
 
@@ -339,6 +341,7 @@ func cloneGameState(in model.GameState) model.GameState {
 	for index := range in.Map.Cells {
 		out.Map.Cells[index] = in.Map.Cells[index]
 		out.Map.Cells[index].OccupantPlayerIDs = append([]model.PlayerID(nil), in.Map.Cells[index].OccupantPlayerIDs...)
+		out.Map.Cells[index].Stash = append([]model.ItemStack(nil), in.Map.Cells[index].Stash...)
 	}
 	out.Map.RestrictedZones = append([]model.ZoneState(nil), in.Map.RestrictedZones...)
 
@@ -355,6 +358,7 @@ func clonePlayerState(in model.PlayerState) model.PlayerState {
 	out := in
 	out.Inventory = append([]model.ItemStack(nil), in.Inventory...)
 	out.Cards = append([]model.CardType(nil), in.Cards...)
+	out.NightCardChoices = append([]model.CardType(nil), in.NightCardChoices...)
 	out.Effects = append([]model.EffectState(nil), in.Effects...)
 	return out
 }

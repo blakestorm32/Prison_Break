@@ -73,10 +73,66 @@ func TestCanPlayerUseScopeRules(t *testing.T) {
 }
 
 func TestEffectDurationTicksForTimedAbilities(t *testing.T) {
-	if got := EffectDurationTicks(model.AbilityDetainer, 30); got != 90 {
-		t.Fatalf("expected detainer duration 90 ticks at 30Hz, got %d", got)
+	if got := EffectDurationTicks(model.AbilityDetainer, 30); got != 450 {
+		t.Fatalf("expected detainer duration 450 ticks at 30Hz, got %d", got)
 	}
 	if got := EffectDurationTicks(model.AbilityType("invalid_ability"), 30); got != 0 {
 		t.Fatalf("expected unknown ability duration 0, got %d", got)
+	}
+}
+
+func TestKnownAbilitiesDeterministicOrder(t *testing.T) {
+	got := KnownAbilities()
+	want := []model.AbilityType{
+		model.AbilityAlarm,
+		model.AbilitySearch,
+		model.AbilityCameraMan,
+		model.AbilityDetainer,
+		model.AbilityTracker,
+		model.AbilityPickPocket,
+		model.AbilityHacker,
+		model.AbilityDisguise,
+		model.AbilityLocksmith,
+		model.AbilityChameleon,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d abilities, got %d", len(want), len(got))
+	}
+	for idx := range want {
+		if got[idx] != want[idx] {
+			t.Fatalf("expected ability %d to be %s, got %s", idx, want[idx], got[idx])
+		}
+	}
+}
+
+func TestAbilitiesForPlayerFiltersByScope(t *testing.T) {
+	warden := model.PlayerState{Role: model.RoleWarden, Faction: model.FactionAuthority}
+	prisoner := model.PlayerState{Role: model.RoleGangMember, Faction: model.FactionPrisoner}
+
+	wardenAbilities := AbilitiesForPlayer(warden)
+	if len(wardenAbilities) == 0 {
+		t.Fatalf("expected warden to have at least one ability")
+	}
+	foundAlarm := false
+	for _, ability := range wardenAbilities {
+		if ability == model.AbilityAlarm {
+			foundAlarm = true
+		}
+		if ability == model.AbilityPickPocket {
+			t.Fatalf("expected warden ability list to exclude prisoner-only abilities")
+		}
+	}
+	if !foundAlarm {
+		t.Fatalf("expected warden ability list to include alarm")
+	}
+
+	prisonerAbilities := AbilitiesForPlayer(prisoner)
+	if len(prisonerAbilities) == 0 {
+		t.Fatalf("expected prisoner to have at least one ability")
+	}
+	for _, ability := range prisonerAbilities {
+		if ability == model.AbilityAlarm || ability == model.AbilitySearch {
+			t.Fatalf("expected prisoner ability list to exclude authority-only abilities")
+		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"prison-break/internal/client/input"
 	"prison-break/internal/client/netclient"
 	"prison-break/internal/client/prediction"
+	"prison-break/internal/engine/physics"
 	gamemap "prison-break/internal/gamecore/map"
 	"prison-break/internal/shared/model"
 )
@@ -133,7 +134,7 @@ func TestShellPredictionReconcilesLocalMovement(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected render state after local predicted input")
 	}
-	assertNearValue(t, findPlayerInStateForShellTest(rendered0, "p1").Position.X, 1.0, 0.05)
+	assertNearValue(t, findPlayerInStateForShellTest(rendered0, "p1").Position.X, physics.BaseMoveStepPerTick, 0.05)
 
 	now = now.Add(20 * time.Millisecond)
 	delta, err := json.Marshal(model.GameDelta{
@@ -166,7 +167,18 @@ func TestShellPredictionReconcilesLocalMovement(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected render state after correction blend start")
 	}
-	assertNearValue(t, findPlayerInStateForShellTest(rendered1, "p1").Position.X, 0.8, 0.12)
+	intermediatePositionX := findPlayerInStateForShellTest(rendered1, "p1").Position.X
+	minBound := float32(0.5)
+	maxBound := physics.BaseMoveStepPerTick
+	if minBound > maxBound {
+		minBound, maxBound = maxBound, minBound
+	}
+	if intermediatePositionX <= minBound || intermediatePositionX >= maxBound {
+		t.Fatalf(
+			"expected blended position to remain between authoritative and local predicted values, got=%f",
+			intermediatePositionX,
+		)
+	}
 
 	now = now.Add(100 * time.Millisecond)
 	rendered2, ok := shell.resolveRenderState()

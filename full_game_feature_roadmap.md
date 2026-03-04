@@ -5,7 +5,7 @@ Scope: deliver a fully playable multiplayer game with complete role/card/ability
 Source specs:
 - `game_idea.txt`
 - `repo_layout_and_architecture`
-- `roadmap_tickets.md` (detailed sequential tickets)
+- `tickets/roadmap_tickets.md` (detailed sequential tickets)
 
 ## Current Baseline
 

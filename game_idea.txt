@@ -25,7 +25,7 @@ The game ends immediately when ANY global end condition is met.
 
 GLOBAL END CONDITIONS
 ---------------------
-- 10 day/night cycles complete
+- 6 day/night cycles complete
 - Warden dies
 - Gang Leader escapes
 - All gang members die
@@ -328,6 +328,50 @@ PRISONERS (one per prisoner)
 - Disguise
 - Locksmith
 - Chameleon
+
+
+ABILITY BEHAVIOR OVERVIEW
+-------------------------
+Authority abilities
+- Camera Man:
+  - Use in Camera Room while power is ON
+  - Opens camera-view mode for a limited duration
+  - Can cycle one room at a time
+- Search:
+  - Search one player per day
+  - Shows a report of target inventory and confiscates contraband
+- Detainer:
+  - Can detain a prisoner for 15 seconds
+  - Max uses per day: 2
+- Tracker:
+  - Activates tracker-view mode for 30 seconds
+  - Shows recent footsteps per player in that player's color
+
+Prisoner abilities
+- Pick Pocket:
+  - Steal one random item from a target player
+  - Max uses per day: 1
+- Hacker:
+  - Cuts prison power (disables camera systems)
+- Disguise:
+  - Become disguised as NPC for 20 seconds
+- Locksmith:
+  - Unlock/open one valid door for prisoners
+  - Max uses per day: 1
+- Chameleon:
+  - Stand still for 5 seconds to turn invisible
+  - Invisibility remains until movement
+
+
+PRISONER MONEY TASKS (NPC INTERACTION)
+--------------------------------------
+- Prisoners earn money through NPC prisoner tasks during DAY.
+- Interact with an NPC prisoner to receive a task.
+- Task types:
+  - Visit-room task: go to the requested room, then report back to an NPC prisoner.
+  - Hold-item task: carry the requested item, then report back to an NPC prisoner.
+- Completing a task grants Money card rewards.
+- Money cards are then spent at night in the Black Market.
 
 
 CARDS SYSTEM

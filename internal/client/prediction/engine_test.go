@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"prison-break/internal/engine/physics"
 	"prison-break/internal/shared/model"
 )
 
@@ -111,7 +112,7 @@ func TestReconciliationDropsAckedInputsAndSnapsLargeError(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected first render state")
 	}
-	assertNear(t, findPlayer(firstRender.Players, "p1").Position.X, 2.0, 0.01)
+	assertNear(t, findPlayer(firstRender.Players, "p1").Position.X, 2*physics.BaseMoveStepPerTick, 0.01)
 
 	auth := model.GameState{
 		TickID: 31,
@@ -163,7 +164,7 @@ func TestReconciliationBlendsSmallErrorOverCorrectionWindow(t *testing.T) {
 	})
 
 	rendered0, _ := engine.RenderState(t0)
-	assertNear(t, findPlayer(rendered0.Players, "p1").Position.X, 1.0, 0.01)
+	assertNear(t, findPlayer(rendered0.Players, "p1").Position.X, physics.BaseMoveStepPerTick, 0.01)
 
 	engine.AcceptAuthoritativeSnapshot(model.Snapshot{
 		Kind: model.SnapshotKindDelta,
@@ -178,8 +179,9 @@ func TestReconciliationBlendsSmallErrorOverCorrectionWindow(t *testing.T) {
 	}, t0.Add(20*time.Millisecond))
 
 	rendered1, _ := engine.RenderState(t0.Add(60 * time.Millisecond))
-	// dt=60ms over 100ms blend => from 1.0 toward 0.5 by 60% => 0.7
-	assertNear(t, findPlayer(rendered1.Players, "p1").Position.X, 0.7, 0.03)
+	// dt=60ms over 100ms blend => from base step toward 0.5 by 60%.
+	expectedBlend := physics.BaseMoveStepPerTick + ((0.5 - physics.BaseMoveStepPerTick) * 0.6)
+	assertNear(t, findPlayer(rendered1.Players, "p1").Position.X, expectedBlend, 0.03)
 
 	rendered2, _ := engine.RenderState(t0.Add(160 * time.Millisecond))
 	// after additional 100ms => full settle to authoritative.

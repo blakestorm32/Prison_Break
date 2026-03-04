@@ -3,6 +3,7 @@ package render
 import (
 	"fmt"
 	"image/color"
+	"sort"
 	"strings"
 
 	"github.com/hajimehoshi/ebiten/v2"
@@ -12,6 +13,7 @@ import (
 
 	"prison-break/internal/client/input"
 	"prison-break/internal/gamecore/abilities"
+	"prison-break/internal/gamecore/cards"
 	"prison-break/internal/gamecore/escape"
 	gameitems "prison-break/internal/gamecore/items"
 	gamemap "prison-break/internal/gamecore/map"
@@ -27,6 +29,8 @@ const (
 	actionPanelAbilities
 	actionPanelMarket
 	actionPanelEscape
+	actionPanelNightCards
+	actionPanelStash
 )
 
 type panelInputEdgeState struct {
@@ -35,6 +39,7 @@ type panelInputEdgeState struct {
 	abilities bool
 	market    bool
 	escape    bool
+	stash     bool
 	interact  bool
 	prev      bool
 	next      bool
@@ -47,6 +52,7 @@ type actionPanelLayout struct {
 	abilitiesTab input.Rect
 	marketTab    input.Rect
 	escapeTab    input.Rect
+	stashTab     input.Rect
 	prevButton   input.Rect
 	nextButton   input.Rect
 	useButton    input.Rect
@@ -58,6 +64,8 @@ type actionPanelAvailability struct {
 	abilities bool
 	market    bool
 	escape    bool
+	stash     bool
+	nightCards bool
 }
 
 func (s *Shell) augmentSnapshotWithPanelTouches(snapshot input.InputSnapshot) input.InputSnapshot {
@@ -80,6 +88,9 @@ func (s *Shell) augmentSnapshotWithPanelTouches(snapshot input.InputSnapshot) in
 	}
 	if touchInsideRect(snapshot.Touches, layout.escapeTab) {
 		snapshot.PanelEscapePressed = true
+	}
+	if touchInsideRect(snapshot.Touches, layout.stashTab) {
+		snapshot.PanelStashPressed = true
 	}
 	if touchInsideRect(snapshot.Touches, layout.prevButton) {
 		snapshot.PanelPrevPressed = true
@@ -126,6 +137,7 @@ func (s *Shell) updateActionPanelCommands(
 		abilities: snapshot.PanelAbilitiesPressed,
 		market:    snapshot.PanelMarketPressed,
 		escape:    snapshot.PanelEscapePressed,
+		stash:     snapshot.PanelStashPressed,
 		interact:  interactPressed,
 		prev:      snapshot.PanelPrevPressed,
 		next:      snapshot.PanelNextPressed,
@@ -139,6 +151,7 @@ func (s *Shell) updateActionPanelCommands(
 	abilitiesEdge := current.abilities && !previous.abilities
 	marketEdge := current.market && !previous.market
 	escapeEdge := current.escape && !previous.escape
+	stashEdge := current.stash && !previous.stash
 	interactEdge := current.interact && !previous.interact
 	prevEdge := current.prev && !previous.prev
 	nextEdge := current.next && !previous.next
@@ -151,7 +164,7 @@ func (s *Shell) updateActionPanelCommands(
 		return nil
 	}
 
-	availability := computeActionPanelAvailability(*localPlayer)
+	availability := computeActionPanelAvailability(*localPlayer, state)
 
 	if inventoryEdge && availability.inventory {
 		s.toggleActionPanel(actionPanelInventory)
@@ -167,6 +180,16 @@ func (s *Shell) updateActionPanelCommands(
 		s.toggleActionPanel(actionPanelAbilities)
 		s.panelLocalHint = ""
 		s.panelLocalHintWarning = false
+	}
+	if stashEdge {
+		if availability.stash {
+			s.toggleActionPanel(actionPanelStash)
+			s.panelLocalHint = ""
+			s.panelLocalHintWarning = false
+		} else {
+			s.panelLocalHint = "Go to your cell block to access stash."
+			s.panelLocalHintWarning = true
+		}
 	}
 	if marketEdge {
 		s.panelLocalHint = marketAccessInstruction(state.Map.BlackMarketRoomID)
@@ -191,6 +214,9 @@ func (s *Shell) updateActionPanelCommands(
 			s.panelLocalHint = reason
 			s.panelLocalHintWarning = true
 		}
+	}
+	if availability.nightCards {
+		s.panelMode = actionPanelNightCards
 	}
 
 	if !isPanelModeAvailable(s.panelMode, availability) {
@@ -352,6 +378,66 @@ func (s *Shell) updateActionPanelCommands(
 		s.panelLocalHint = ""
 		s.panelLocalHintWarning = false
 		return []model.InputCommand{command}
+
+	case actionPanelNightCards:
+		entries := nightCardPanelEntries(*localPlayer)
+		if len(entries) == 0 {
+			s.panelNightCardsIdx = 0
+			return nil
+		}
+		s.panelNightCardsIdx = clampPanelIndex(s.panelNightCardsIdx, len(entries))
+		if prevEdge {
+			s.panelNightCardsIdx = wrapPanelIndex(s.panelNightCardsIdx, len(entries), -1)
+		}
+		if nextEdge {
+			s.panelNightCardsIdx = wrapPanelIndex(s.panelNightCardsIdx, len(entries), 1)
+		}
+		if !useEdge {
+			return nil
+		}
+		command, ok := s.inputController.BuildInteractCommand(model.InteractPayload{
+			NightCardChoice: entries[s.panelNightCardsIdx],
+		}, targetTick)
+		if !ok {
+			s.panelLocalHint = "Unable to select night card."
+			s.panelLocalHintWarning = true
+			return nil
+		}
+		s.panelLocalHint = ""
+		s.panelLocalHintWarning = false
+		return []model.InputCommand{command}
+
+	case actionPanelStash:
+		entries := stashPanelEntries(*localPlayer, state.Map)
+		if len(entries) == 0 {
+			s.panelStashIdx = 0
+			return nil
+		}
+		s.panelStashIdx = clampPanelIndex(s.panelStashIdx, len(entries))
+		if prevEdge {
+			s.panelStashIdx = wrapPanelIndex(s.panelStashIdx, len(entries), -1)
+		}
+		if nextEdge {
+			s.panelStashIdx = wrapPanelIndex(s.panelStashIdx, len(entries), 1)
+		}
+		if !useEdge {
+			return nil
+		}
+
+		selected := entries[s.panelStashIdx]
+		command, ok := s.inputController.BuildInteractCommand(model.InteractPayload{
+			StashAction: selected.Action,
+			StashItem:   selected.Item,
+			StashAmount: 1,
+		}, targetTick)
+		if !ok {
+			s.panelLocalHint = "Unable to submit stash action."
+			s.panelLocalHintWarning = true
+			return nil
+		}
+		s.panelLocalHint = ""
+		s.panelLocalHintWarning = false
+		return []model.InputCommand{command}
 	}
 
 	return nil
@@ -366,7 +452,7 @@ func (s *Shell) toggleActionPanel(next actionPanelMode) {
 }
 
 func actionPanelUsesCenteredModal(mode actionPanelMode) bool {
-	return mode == actionPanelMarket || mode == actionPanelEscape
+	return mode == actionPanelMarket || mode == actionPanelEscape || mode == actionPanelNightCards || mode == actionPanelStash
 }
 
 func shouldHandleMarketInteract(local model.PlayerState, state model.GameState) bool {
@@ -405,14 +491,17 @@ func marketAccessInstruction(marketRoomID model.RoomID) string {
 	return fmt.Sprintf("Go to %s at night and press Interact (E/F) to buy.", roomDisplayLabel(marketRoomID))
 }
 
-func computeActionPanelAvailability(local model.PlayerState) actionPanelAvailability {
+func computeActionPanelAvailability(local model.PlayerState, state model.GameState) actionPanelAvailability {
 	prisonerAccess := gamemap.IsPrisonerPlayer(local)
+	cellOwner := local.AssignedCell != 0 && local.CurrentRoomID == gamemap.RoomCellBlockA
 	return actionPanelAvailability{
 		inventory: len(inventoryPanelEntries(local)) > 0,
 		cards:     len(cardPanelEntries(local)) > 0,
 		abilities: len(abilityPanelEntries(local)) > 0,
 		market:    prisonerAccess,
 		escape:    prisonerAccess,
+		stash:     cellOwner,
+		nightCards: len(local.NightCardChoices) > 0 && state.Phase.Current == model.PhaseNight,
 	}
 }
 
@@ -430,6 +519,10 @@ func isPanelModeAvailable(mode actionPanelMode, availability actionPanelAvailabi
 		return availability.market
 	case actionPanelEscape:
 		return availability.escape
+	case actionPanelNightCards:
+		return availability.nightCards
+	case actionPanelStash:
+		return availability.stash
 	default:
 		return false
 	}
@@ -524,6 +617,76 @@ func marketPanelEntries() []gameitems.BlackMarketOffer {
 
 func escapePanelEntries(local model.PlayerState, mapState model.MapState) []escape.RouteEvaluation {
 	return escape.EvaluateAllRoutes(local, mapState)
+}
+
+func nightCardPanelEntries(player model.PlayerState) []model.CardType {
+	if len(player.NightCardChoices) == 0 {
+		return nil
+	}
+	out := append([]model.CardType(nil), player.NightCardChoices...)
+	sort.Slice(out, func(i int, j int) bool {
+		return out[i] < out[j]
+	})
+	return out
+}
+
+type stashPanelEntry struct {
+	Action string
+	Item   model.ItemType
+	Count  uint8
+}
+
+func stashPanelEntries(local model.PlayerState, mapState model.MapState) []stashPanelEntry {
+	if local.AssignedCell == 0 {
+		return nil
+	}
+	entries := make([]stashPanelEntry, 0, len(local.Inventory)+6)
+	for _, stack := range local.Inventory {
+		if stack.Item == "" || stack.Quantity == 0 {
+			continue
+		}
+		entries = append(entries, stashPanelEntry{
+			Action: "deposit",
+			Item:   stack.Item,
+			Count:  stack.Quantity,
+		})
+	}
+
+	stash := stashForAssignedCell(local, mapState)
+	for _, stack := range stash {
+		if stack.Item == "" || stack.Quantity == 0 {
+			continue
+		}
+		entries = append(entries, stashPanelEntry{
+			Action: "withdraw",
+			Item:   stack.Item,
+			Count:  stack.Quantity,
+		})
+	}
+
+	sort.Slice(entries, func(i int, j int) bool {
+		if entries[i].Action != entries[j].Action {
+			return entries[i].Action < entries[j].Action
+		}
+		if entries[i].Item != entries[j].Item {
+			return entries[i].Item < entries[j].Item
+		}
+		return entries[i].Count < entries[j].Count
+	})
+	return entries
+}
+
+func stashForAssignedCell(local model.PlayerState, mapState model.MapState) []model.ItemStack {
+	if local.AssignedCell == 0 {
+		return nil
+	}
+	for _, cell := range mapState.Cells {
+		if cell.ID != local.AssignedCell {
+			continue
+		}
+		return append([]model.ItemStack(nil), cell.Stash...)
+	}
+	return nil
 }
 
 func abilityPayloadForPanel(ability model.AbilityType, local model.PlayerState, state model.GameState) model.AbilityUsePayload {
@@ -713,7 +876,7 @@ func (s *Shell) actionPanelLayout() actionPanelLayout {
 		tabHeight = 28
 	}
 
-	totalTabsWidth := (tabWidth * 5) + (gap * 4)
+	totalTabsWidth := (tabWidth * 6) + (gap * 5)
 	startX := width - totalTabsWidth - 16
 	if startX < 12 {
 		startX = 12
@@ -724,10 +887,11 @@ func (s *Shell) actionPanelLayout() actionPanelLayout {
 	cards := input.Rect{MinX: inventory.MaxX + gap, MinY: y, MaxX: inventory.MaxX + gap + tabWidth, MaxY: y + tabHeight}
 	abilities := input.Rect{MinX: cards.MaxX + gap, MinY: y, MaxX: cards.MaxX + gap + tabWidth, MaxY: y + tabHeight}
 	market := input.Rect{MinX: abilities.MaxX + gap, MinY: y, MaxX: abilities.MaxX + gap + tabWidth, MaxY: y + tabHeight}
-	escapeTab := input.Rect{MinX: market.MaxX + gap, MinY: y, MaxX: market.MaxX + gap + tabWidth, MaxY: y + tabHeight}
+	stashTab := input.Rect{MinX: market.MaxX + gap, MinY: y, MaxX: market.MaxX + gap + tabWidth, MaxY: y + tabHeight}
+	escapeTab := input.Rect{MinX: stashTab.MaxX + gap, MinY: y, MaxX: stashTab.MaxX + gap + tabWidth, MaxY: y + tabHeight}
 
 	panelY := y + tabHeight + 12
-	panelWidth := tabWidth*5 + gap*4
+	panelWidth := tabWidth*6 + gap*5
 	panelHeight := 208.0
 	if s.screenHeight <= 760 {
 		panelHeight = 184
@@ -757,6 +921,7 @@ func (s *Shell) actionPanelLayout() actionPanelLayout {
 		cardsTab:     cards,
 		abilitiesTab: abilities,
 		marketTab:    market,
+		stashTab:     stashTab,
 		escapeTab:    escapeTab,
 		prevButton:   prevButton,
 		nextButton:   nextButton,
@@ -775,7 +940,7 @@ func (s *Shell) drawActionPanels(screen *ebiten.Image, state model.GameState) {
 	}
 
 	layout := s.actionPanelLayout()
-	availability := computeActionPanelAvailability(local)
+	availability := computeActionPanelAvailability(local, state)
 
 	if availability.inventory {
 		s.drawActionPanelTab(screen, layout.inventoryTab, "Inventory", "Tab", s.panelMode == actionPanelInventory)
@@ -788,6 +953,9 @@ func (s *Shell) drawActionPanels(screen *ebiten.Image, state model.GameState) {
 	}
 	if availability.escape {
 		s.drawActionPanelTab(screen, layout.escapeTab, "Escape", "X", s.panelMode == actionPanelEscape)
+	}
+	if availability.stash {
+		s.drawActionPanelTab(screen, layout.stashTab, "Stash", "H", s.panelMode == actionPanelStash)
 	}
 	if availability.market {
 		instruction := marketAccessInstruction(state.Map.BlackMarketRoomID)
@@ -976,6 +1144,42 @@ func (s *Shell) drawCenteredActionPanelModal(screen *ebiten.Image, state model.G
 			detailLines = append(detailLines, fmt.Sprintf("%s %s", prefix, requirement.Label))
 		}
 		detailLines = append(detailLines, "Last: "+formatEscapeAttemptFeedback(local.LastEscapeAttempt))
+
+	case actionPanelNightCards:
+		choices := nightCardPanelEntries(local)
+		if len(choices) == 0 {
+			detailLines = append(detailLines, "No night cards pending.")
+			break
+		}
+		s.panelNightCardsIdx = clampPanelIndex(s.panelNightCardsIdx, len(choices))
+		for index, card := range choices {
+			lines = append(lines, modalLine{
+				text:      fmt.Sprintf("%d. %s", index+1, card),
+				color:     color.RGBA{R: 214, G: 224, B: 236, A: 255},
+				highlight: index == s.panelNightCardsIdx,
+			})
+		}
+		detailLines = append(detailLines, fmt.Sprintf("Choose 1 card for the night. Slots: %d/%d", len(local.Cards), cards.MaxCardsHeld))
+
+	case actionPanelStash:
+		entries := stashPanelEntries(local, state.Map)
+		if len(entries) == 0 {
+			detailLines = append(detailLines, "No stash actions available.")
+			break
+		}
+		s.panelStashIdx = clampPanelIndex(s.panelStashIdx, len(entries))
+		for index, entry := range entries {
+			verb := "Store"
+			if entry.Action == "withdraw" {
+				verb = "Take"
+			}
+			lines = append(lines, modalLine{
+				text:      fmt.Sprintf("%d. %s %s x%d", index+1, verb, entry.Item, entry.Count),
+				color:     color.RGBA{R: 214, G: 224, B: 236, A: 255},
+				highlight: index == s.panelStashIdx,
+			})
+		}
+		detailLines = append(detailLines, fmt.Sprintf("Cell stash entries: %d", len(stashForAssignedCell(local, state.Map))))
 	}
 
 	lines = append(lines, modalLine{text: "", color: color.RGBA{R: 194, G: 205, B: 218, A: 255}})
@@ -1036,6 +1240,10 @@ func actionPanelTitle(mode actionPanelMode) string {
 		return "Black Market"
 	case actionPanelEscape:
 		return "Escape Routes"
+	case actionPanelNightCards:
+		return "Night Card Draft"
+	case actionPanelStash:
+		return "Cell Stash"
 	default:
 		return "Action Panel"
 	}
@@ -1091,6 +1299,26 @@ func (s *Shell) panelEntriesForDraw(state model.GameState, local model.PlayerSta
 			lines = append(lines, fmt.Sprintf("%d. %s  %s  %s", index+1, entry.RouteLabel, stateText, requirementSummary(entry.Requirements)))
 		}
 		return lines, clampPanelIndex(s.panelEscapeIdx, len(entries))
+
+	case actionPanelNightCards:
+		entries := nightCardPanelEntries(local)
+		lines := make([]string, 0, len(entries))
+		for index, entry := range entries {
+			lines = append(lines, fmt.Sprintf("%d. %s", index+1, entry))
+		}
+		return lines, clampPanelIndex(s.panelNightCardsIdx, len(entries))
+
+	case actionPanelStash:
+		entries := stashPanelEntries(local, state.Map)
+		lines := make([]string, 0, len(entries))
+		for index, entry := range entries {
+			verb := "Store"
+			if entry.Action == "withdraw" {
+				verb = "Take"
+			}
+			lines = append(lines, fmt.Sprintf("%d. %s %s x%d", index+1, verb, entry.Item, entry.Count))
+		}
+		return lines, clampPanelIndex(s.panelStashIdx, len(entries))
 	}
 
 	return nil, 0

@@ -267,7 +267,7 @@ func TestSubmitInputRejectsUnknownAbilityAndCardPayloads(t *testing.T) {
 	}
 }
 
-func TestSubmitInputRejectsAbilityPayloadWithoutRequiredTargets(t *testing.T) {
+func TestSubmitInputAllowsAbilityPayloadWithoutTargetsForServerAutoTargeting(t *testing.T) {
 	manager, _, _ := newTestManager(
 		Config{
 			MinPlayers:    1,
@@ -295,8 +295,8 @@ func TestSubmitInputRejectsAbilityPayloadWithoutRequiredTargets(t *testing.T) {
 			Ability: model.AbilitySearch,
 		}),
 	})
-	if !errors.Is(err, ErrInvalidInputPayload) {
-		t.Fatalf("expected missing search target player to be rejected, got %v", err)
+	if err != nil {
+		t.Fatalf("expected missing search target player to be accepted for server-side target resolution, got %v", err)
 	}
 
 	_, err = manager.SubmitInput(match.MatchID, model.InputCommand{
@@ -307,8 +307,8 @@ func TestSubmitInputRejectsAbilityPayloadWithoutRequiredTargets(t *testing.T) {
 			Ability: model.AbilityLocksmith,
 		}),
 	})
-	if !errors.Is(err, ErrInvalidInputPayload) {
-		t.Fatalf("expected missing locksmith target door to be rejected, got %v", err)
+	if err != nil {
+		t.Fatalf("expected missing locksmith target door to be accepted for server-side target resolution, got %v", err)
 	}
 
 	_, err = manager.SubmitInput(match.MatchID, model.InputCommand{
