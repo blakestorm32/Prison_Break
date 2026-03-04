@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "accounts": {
+    "player-conn-000001": {
+      "player_id": "player-conn-000001",
+      "display_name": "Player",
+      "created_at": "2026-03-04T02:34:58.3322311Z",
+      "updated_at": "2026-03-04T02:34:58.3322311Z",
+      "last_seen_at": "2026-03-04T02:34:58.3322311Z",
+      "stats": {
+        "matches_played": 0,
+        "matches_won": 0,
+        "matches_escaped": 0,
+        "matches_survived": 0,
+        "deaths": 0
+      }
+    },
+    "player-conn-000002": {
+      "player_id": "player-conn-000002",
+      "display_name": "Player",
+      "created_at": "2026-03-04T02:35:22.1688362Z",
+      "updated_at": "2026-03-04T02:35:22.1688362Z",
+      "last_seen_at": "2026-03-04T02:35:22.1688362Z",
+      "stats": {
+        "matches_played": 0,
+        "matches_won": 0,
+        "matches_escaped": 0,
+        "matches_survived": 0,
+        "deaths": 0
+      }
+    },
+    "player-conn-000003": {
+      "player_id": "player-conn-000003",
+      "display_name": "Player",
+      "created_at": "2026-03-04T02:35:32.793656Z",
+      "updated_at": "2026-03-04T02:35:32.793656Z",
+      "last_seen_at": "2026-03-04T02:35:32.793656Z",
+      "stats": {
+        "matches_played": 0,
+        "matches_won": 0,
+        "matches_escaped": 0,
+        "matches_survived": 0,
+        "deaths": 0
+      }
+    },
+    "player-conn-000004": {
+      "player_id": "player-conn-000004",
+      "display_name": "Player",
+      "created_at": "2026-03-04T02:35:41.0332183Z",
+      "updated_at": "2026-03-04T02:35:41.0332183Z",
+      "last_seen_at": "2026-03-04T02:35:41.0332183Z",
+      "stats": {
+        "matches_played": 0,
+        "matches_won": 0,
+        "matches_escaped": 0,
+        "matches_survived": 0,
+        "deaths": 0
+      }
+    },
+    "player-conn-000005": {
+      "player_id": "player-conn-000005",
+      "display_name": "Player",
+      "created_at": "2026-03-04T02:35:50.6917406Z",
+      "updated_at": "2026-03-04T02:35:50.6917406Z",
+      "last_seen_at": "2026-03-04T02:35:50.6917406Z",
+      "stats": {
+        "matches_played": 0,
+        "matches_won": 0,
+        "matches_escaped": 0,
+        "matches_survived": 0,
+        "deaths": 0
+      }
+    }
+  }
+}

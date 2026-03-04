@@ -1,0 +1,823 @@
+package render
+
+import (
+	"fmt"
+	"image/color"
+
+	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/text"
+	"github.com/hajimehoshi/ebiten/v2/vector"
+	"golang.org/x/image/font/basicfont"
+
+	"prison-break/internal/client/input"
+	"prison-break/internal/gamecore/abilities"
+	"prison-break/internal/gamecore/escape"
+	gameitems "prison-break/internal/gamecore/items"
+	gamemap "prison-break/internal/gamecore/map"
+	"prison-break/internal/shared/model"
+)
+
+type actionPanelMode uint8
+
+const (
+	actionPanelNone actionPanelMode = iota
+	actionPanelInventory
+	actionPanelCards
+	actionPanelAbilities
+	actionPanelMarket
+	actionPanelEscape
+)
+
+type panelInputEdgeState struct {
+	inventory bool
+	cards     bool
+	abilities bool
+	market    bool
+	escape    bool
+	prev      bool
+	next      bool
+	use       bool
+}
+
+type actionPanelLayout struct {
+	inventoryTab input.Rect
+	cardsTab     input.Rect
+	abilitiesTab input.Rect
+	marketTab    input.Rect
+	escapeTab    input.Rect
+	prevButton   input.Rect
+	nextButton   input.Rect
+	useButton    input.Rect
+}
+
+func (s *Shell) augmentSnapshotWithPanelTouches(snapshot input.InputSnapshot) input.InputSnapshot {
+	if s == nil || len(snapshot.Touches) == 0 {
+		return snapshot
+	}
+
+	layout := s.actionPanelLayout()
+	if touchInsideRect(snapshot.Touches, layout.inventoryTab) {
+		snapshot.PanelInventoryPressed = true
+	}
+	if touchInsideRect(snapshot.Touches, layout.cardsTab) {
+		snapshot.PanelCardsPressed = true
+	}
+	if touchInsideRect(snapshot.Touches, layout.abilitiesTab) {
+		snapshot.PanelAbilitiesPressed = true
+	}
+	if touchInsideRect(snapshot.Touches, layout.marketTab) {
+		snapshot.PanelMarketPressed = true
+	}
+	if touchInsideRect(snapshot.Touches, layout.escapeTab) {
+		snapshot.PanelEscapePressed = true
+	}
+	if touchInsideRect(snapshot.Touches, layout.prevButton) {
+		snapshot.PanelPrevPressed = true
+	}
+	if touchInsideRect(snapshot.Touches, layout.nextButton) {
+		snapshot.PanelNextPressed = true
+	}
+	if touchInsideRect(snapshot.Touches, layout.useButton) {
+		snapshot.PanelUsePressed = true
+	}
+	return snapshot
+}
+
+func touchInsideRect(touches []input.TouchPoint, rect input.Rect) bool {
+	if len(touches) == 0 {
+		return false
+	}
+	for _, touch := range touches {
+		if rect.Contains(touch.X, touch.Y) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Shell) updateActionPanelCommands(
+	snapshot input.InputSnapshot,
+	state model.GameState,
+	localPlayer *model.PlayerState,
+) []model.InputCommand {
+	if s == nil || s.inputController == nil {
+		return nil
+	}
+
+	current := panelInputEdgeState{
+		inventory: snapshot.PanelInventoryPressed,
+		cards:     snapshot.PanelCardsPressed,
+		abilities: snapshot.PanelAbilitiesPressed,
+		market:    snapshot.PanelMarketPressed,
+		escape:    snapshot.PanelEscapePressed,
+		prev:      snapshot.PanelPrevPressed,
+		next:      snapshot.PanelNextPressed,
+		use:       snapshot.PanelUsePressed,
+	}
+	previous := s.panelInputPrev
+	s.panelInputPrev = current
+
+	inventoryEdge := current.inventory && !previous.inventory
+	cardsEdge := current.cards && !previous.cards
+	abilitiesEdge := current.abilities && !previous.abilities
+	marketEdge := current.market && !previous.market
+	escapeEdge := current.escape && !previous.escape
+	prevEdge := current.prev && !previous.prev
+	nextEdge := current.next && !previous.next
+	useEdge := current.use && !previous.use
+
+	if inventoryEdge {
+		s.toggleActionPanel(actionPanelInventory)
+	}
+	if cardsEdge {
+		s.toggleActionPanel(actionPanelCards)
+	}
+	if abilitiesEdge {
+		s.toggleActionPanel(actionPanelAbilities)
+	}
+	if marketEdge {
+		s.toggleActionPanel(actionPanelMarket)
+	}
+	if escapeEdge {
+		s.toggleActionPanel(actionPanelEscape)
+	}
+
+	if s.panelMode == actionPanelNone || localPlayer == nil {
+		return nil
+	}
+
+	targetTick := state.TickID + 1
+	switch s.panelMode {
+	case actionPanelInventory:
+		entries := inventoryPanelEntries(*localPlayer)
+		if len(entries) == 0 {
+			s.panelInventoryIdx = 0
+			return nil
+		}
+		s.panelInventoryIdx = clampPanelIndex(s.panelInventoryIdx, len(entries))
+		if prevEdge {
+			s.panelInventoryIdx = wrapPanelIndex(s.panelInventoryIdx, len(entries), -1)
+		}
+		if nextEdge {
+			s.panelInventoryIdx = wrapPanelIndex(s.panelInventoryIdx, len(entries), 1)
+		}
+		if !useEdge {
+			return nil
+		}
+
+		command, ok := s.inputController.BuildUseItemCommand(model.ItemUsePayload{
+			Item:   entries[s.panelInventoryIdx].Item,
+			Amount: 1,
+		}, targetTick)
+		if !ok {
+			return nil
+		}
+		return []model.InputCommand{command}
+
+	case actionPanelCards:
+		entries := cardPanelEntries(*localPlayer)
+		if len(entries) == 0 {
+			s.panelCardsIdx = 0
+			return nil
+		}
+		s.panelCardsIdx = clampPanelIndex(s.panelCardsIdx, len(entries))
+		if prevEdge {
+			s.panelCardsIdx = wrapPanelIndex(s.panelCardsIdx, len(entries), -1)
+		}
+		if nextEdge {
+			s.panelCardsIdx = wrapPanelIndex(s.panelCardsIdx, len(entries), 1)
+		}
+		if !useEdge {
+			return nil
+		}
+
+		payload := cardPayloadForPanel(entries[s.panelCardsIdx], *localPlayer, state)
+		command, ok := s.inputController.BuildUseCardCommand(payload, targetTick)
+		if !ok {
+			return nil
+		}
+		return []model.InputCommand{command}
+
+	case actionPanelAbilities:
+		entries := abilityPanelEntries(*localPlayer)
+		if len(entries) == 0 {
+			s.panelAbilitiesIdx = 0
+			return nil
+		}
+		s.panelAbilitiesIdx = clampPanelIndex(s.panelAbilitiesIdx, len(entries))
+		if prevEdge {
+			s.panelAbilitiesIdx = wrapPanelIndex(s.panelAbilitiesIdx, len(entries), -1)
+		}
+		if nextEdge {
+			s.panelAbilitiesIdx = wrapPanelIndex(s.panelAbilitiesIdx, len(entries), 1)
+		}
+		if !useEdge {
+			return nil
+		}
+
+		payload := abilityPayloadForPanel(entries[s.panelAbilitiesIdx], *localPlayer, state)
+		command, ok := s.inputController.BuildUseAbilityCommand(payload, targetTick)
+		if !ok {
+			return nil
+		}
+		return []model.InputCommand{command}
+
+	case actionPanelMarket:
+		entries := marketPanelEntries()
+		if len(entries) == 0 {
+			s.panelMarketIdx = 0
+			return nil
+		}
+		s.panelMarketIdx = clampPanelIndex(s.panelMarketIdx, len(entries))
+		if prevEdge {
+			s.panelMarketIdx = wrapPanelIndex(s.panelMarketIdx, len(entries), -1)
+		}
+		if nextEdge {
+			s.panelMarketIdx = wrapPanelIndex(s.panelMarketIdx, len(entries), 1)
+		}
+		if !useEdge {
+			return nil
+		}
+
+		offer := entries[s.panelMarketIdx]
+		if canBuy, _ := marketOfferUsability(*localPlayer, state, offer); !canBuy {
+			return nil
+		}
+		command, ok := s.inputController.BuildBlackMarketBuyCommand(model.BlackMarketPurchasePayload{
+			Item: offer.Item,
+		}, targetTick)
+		if !ok {
+			return nil
+		}
+		return []model.InputCommand{command}
+
+	case actionPanelEscape:
+		entries := escapePanelEntries(*localPlayer, state.Map)
+		if len(entries) == 0 {
+			s.panelEscapeIdx = 0
+			return nil
+		}
+		s.panelEscapeIdx = clampPanelIndex(s.panelEscapeIdx, len(entries))
+		if prevEdge {
+			s.panelEscapeIdx = wrapPanelIndex(s.panelEscapeIdx, len(entries), -1)
+		}
+		if nextEdge {
+			s.panelEscapeIdx = wrapPanelIndex(s.panelEscapeIdx, len(entries), 1)
+		}
+		if !useEdge {
+			return nil
+		}
+		command, ok := s.inputController.BuildInteractCommand(model.InteractPayload{
+			EscapeRoute: entries[s.panelEscapeIdx].Route,
+		}, targetTick)
+		if !ok {
+			return nil
+		}
+		return []model.InputCommand{command}
+	}
+
+	return nil
+}
+
+func (s *Shell) toggleActionPanel(next actionPanelMode) {
+	if s.panelMode == next {
+		s.panelMode = actionPanelNone
+		return
+	}
+	s.panelMode = next
+}
+
+func clampPanelIndex(index int, count int) int {
+	if count <= 0 {
+		return 0
+	}
+	if index < 0 {
+		return 0
+	}
+	if index >= count {
+		return count - 1
+	}
+	return index
+}
+
+func wrapPanelIndex(index int, count int, delta int) int {
+	if count <= 0 || delta == 0 {
+		return clampPanelIndex(index, count)
+	}
+	next := index + delta
+	for next < 0 {
+		next += count
+	}
+	return next % count
+}
+
+func inventoryPanelEntries(player model.PlayerState) []model.ItemStack {
+	if len(player.Inventory) == 0 {
+		return nil
+	}
+	out := make([]model.ItemStack, 0, len(player.Inventory))
+	for _, stack := range player.Inventory {
+		if stack.Item == "" || stack.Quantity == 0 {
+			continue
+		}
+		out = append(out, stack)
+	}
+	return out
+}
+
+func cardPanelEntries(player model.PlayerState) []model.CardType {
+	if len(player.Cards) == 0 {
+		return nil
+	}
+	out := make([]model.CardType, 0, len(player.Cards))
+	for _, card := range player.Cards {
+		if card == "" {
+			continue
+		}
+		out = append(out, card)
+	}
+	return out
+}
+
+func abilityPanelEntries(player model.PlayerState) []model.AbilityType {
+	catalog := []model.AbilityType{
+		model.AbilityAlarm,
+		model.AbilitySearch,
+		model.AbilityCameraMan,
+		model.AbilityDetainer,
+		model.AbilityTracker,
+		model.AbilityPickPocket,
+		model.AbilityHacker,
+		model.AbilityDisguise,
+		model.AbilityLocksmith,
+		model.AbilityChameleon,
+	}
+
+	out := make([]model.AbilityType, 0, len(catalog))
+	for _, ability := range catalog {
+		if !abilities.CanPlayerUse(player, ability) {
+			continue
+		}
+		out = append(out, ability)
+	}
+	return out
+}
+
+func marketPanelEntries() []gameitems.BlackMarketOffer {
+	return gameitems.BlackMarketCatalog()
+}
+
+func escapePanelEntries(local model.PlayerState, mapState model.MapState) []escape.RouteEvaluation {
+	return escape.EvaluateAllRoutes(local, mapState)
+}
+
+func abilityPayloadForPanel(ability model.AbilityType, local model.PlayerState, state model.GameState) model.AbilityUsePayload {
+	payload := model.AbilityUsePayload{
+		Ability: ability,
+	}
+
+	switch ability {
+	case model.AbilitySearch, model.AbilityDetainer, model.AbilityTracker, model.AbilityPickPocket:
+		payload.TargetPlayerID = targetPlayerForPanel(local, state.Players)
+	case model.AbilityLocksmith:
+		payload.TargetDoorID = targetDoorForPanel(local, state.Map.Doors)
+	}
+
+	return payload
+}
+
+func cardPayloadForPanel(card model.CardType, local model.PlayerState, state model.GameState) model.CardUsePayload {
+	payload := model.CardUsePayload{
+		Card: card,
+	}
+
+	switch card {
+	case model.CardLockSnap, model.CardDoorStop:
+		payload.TargetDoorID = targetDoorForPanel(local, state.Map.Doors)
+	case model.CardItemSteal, model.CardItemGrab:
+		payload.TargetPlayerID = targetPlayerForPanel(local, state.Players)
+	case model.CardMoney:
+		payload.TargetEntityID = targetNPCPrisonerForPanel(local, state.Entities)
+	}
+
+	return payload
+}
+
+func targetNPCPrisonerForPanel(local model.PlayerState, entities []model.EntityState) model.EntityID {
+	var (
+		bestID   model.EntityID
+		bestDist float32
+	)
+
+	for _, candidate := range entities {
+		if candidate.ID == 0 || candidate.Kind != model.EntityKindNPCPrisoner || !candidate.Active {
+			continue
+		}
+		if local.CurrentRoomID != "" && candidate.RoomID != "" && candidate.RoomID != local.CurrentRoomID {
+			continue
+		}
+
+		dx := candidate.Position.X - local.Position.X
+		dy := candidate.Position.Y - local.Position.Y
+		distanceSq := (dx * dx) + (dy * dy)
+		if bestID == 0 || distanceSq < bestDist {
+			bestID = candidate.ID
+			bestDist = distanceSq
+		}
+	}
+	return bestID
+}
+
+func targetPlayerForPanel(local model.PlayerState, players []model.PlayerState) model.PlayerID {
+	var (
+		bestID   model.PlayerID
+		bestDist float32
+	)
+
+	for _, candidate := range players {
+		if candidate.ID == "" || candidate.ID == local.ID || !candidate.Alive {
+			continue
+		}
+
+		if local.CurrentRoomID != "" && candidate.CurrentRoomID != "" && candidate.CurrentRoomID != local.CurrentRoomID {
+			continue
+		}
+
+		dx := candidate.Position.X - local.Position.X
+		dy := candidate.Position.Y - local.Position.Y
+		distanceSq := (dx * dx) + (dy * dy)
+		if bestID == "" || distanceSq < bestDist {
+			bestID = candidate.ID
+			bestDist = distanceSq
+		}
+	}
+	return bestID
+}
+
+func targetDoorForPanel(local model.PlayerState, doors []model.DoorState) model.DoorID {
+	if len(doors) == 0 {
+		return 0
+	}
+
+	if local.CurrentRoomID != "" {
+		for _, door := range doors {
+			if door.ID == 0 {
+				continue
+			}
+			if door.RoomA == local.CurrentRoomID || door.RoomB == local.CurrentRoomID {
+				return door.ID
+			}
+		}
+	}
+
+	for _, door := range doors {
+		if door.ID != 0 {
+			return door.ID
+		}
+	}
+	return 0
+}
+
+func marketOfferUsability(local model.PlayerState, state model.GameState, offer gameitems.BlackMarketOffer) (bool, string) {
+	if !local.Alive {
+		return false, "You are down."
+	}
+	if !gamemap.IsPrisonerPlayer(local) {
+		return false, "Only prisoners can buy."
+	}
+	if state.Phase.Current != model.PhaseNight {
+		return false, "Market opens at night."
+	}
+	if state.Map.BlackMarketRoomID == "" {
+		return false, "Market room not set."
+	}
+	if local.CurrentRoomID != state.Map.BlackMarketRoomID {
+		return false, fmt.Sprintf("Go to %s.", state.Map.BlackMarketRoomID)
+	}
+	if offer.Item == model.ItemGoldenBullet && hasInventoryItem(local.Inventory, model.ItemGoldenBullet) {
+		return false, "You already carry the golden bullet."
+	}
+
+	moneyCards := countCards(local.Cards, model.CardMoney)
+	if moneyCards < int(offer.MoneyCardCost) {
+		return false, fmt.Sprintf("Need %d money cards.", offer.MoneyCardCost)
+	}
+	return true, "Purchase ready."
+}
+
+func countCards(cards []model.CardType, target model.CardType) int {
+	if len(cards) == 0 || target == "" {
+		return 0
+	}
+
+	count := 0
+	for _, card := range cards {
+		if card == target {
+			count++
+		}
+	}
+	return count
+}
+
+func hasInventoryItem(inventory []model.ItemStack, target model.ItemType) bool {
+	for _, stack := range inventory {
+		if stack.Item == target && stack.Quantity > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func requirementSummary(requirements []escape.RouteRequirement) string {
+	if len(requirements) == 0 {
+		return "--"
+	}
+	met := 0
+	for _, requirement := range requirements {
+		if requirement.Met {
+			met++
+		}
+	}
+	return fmt.Sprintf("%d/%d met", met, len(requirements))
+}
+
+func formatEscapeAttemptFeedback(feedback model.EscapeAttemptFeedback) string {
+	if feedback.Route == "" || feedback.Status == "" || feedback.TickID == 0 {
+		return "no attempts yet"
+	}
+	status := "FAIL"
+	if feedback.Status == model.EscapeAttemptStatusSuccess {
+		status = "SUCCESS"
+	}
+	if feedback.Reason == "" {
+		return fmt.Sprintf("%s %s @%d", status, feedback.Route, feedback.TickID)
+	}
+	return fmt.Sprintf("%s %s @%d (%s)", status, feedback.Route, feedback.TickID, feedback.Reason)
+}
+
+func (s *Shell) actionPanelLayout() actionPanelLayout {
+	width := float64(s.screenWidth)
+	tabWidth := 94.0
+	tabHeight := 24.0
+	gap := 8.0
+
+	if s.screenWidth <= 900 {
+		tabWidth = 76
+		tabHeight = 28
+	}
+
+	totalTabsWidth := (tabWidth * 5) + (gap * 4)
+	startX := width - totalTabsWidth - 16
+	if startX < 12 {
+		startX = 12
+	}
+	y := 14.0
+
+	inventory := input.Rect{MinX: startX, MinY: y, MaxX: startX + tabWidth, MaxY: y + tabHeight}
+	cards := input.Rect{MinX: inventory.MaxX + gap, MinY: y, MaxX: inventory.MaxX + gap + tabWidth, MaxY: y + tabHeight}
+	abilities := input.Rect{MinX: cards.MaxX + gap, MinY: y, MaxX: cards.MaxX + gap + tabWidth, MaxY: y + tabHeight}
+	market := input.Rect{MinX: abilities.MaxX + gap, MinY: y, MaxX: abilities.MaxX + gap + tabWidth, MaxY: y + tabHeight}
+	escapeTab := input.Rect{MinX: market.MaxX + gap, MinY: y, MaxX: market.MaxX + gap + tabWidth, MaxY: y + tabHeight}
+
+	panelY := y + tabHeight + 12
+	panelWidth := tabWidth*5 + gap*4
+	panelHeight := 208.0
+	if s.screenHeight <= 760 {
+		panelHeight = 184
+	}
+
+	prevButton := input.Rect{
+		MinX: startX + 8,
+		MinY: panelY + panelHeight - 34,
+		MaxX: startX + 88,
+		MaxY: panelY + panelHeight - 8,
+	}
+	nextButton := input.Rect{
+		MinX: prevButton.MaxX + 10,
+		MinY: prevButton.MinY,
+		MaxX: prevButton.MaxX + 90,
+		MaxY: prevButton.MaxY,
+	}
+	useButton := input.Rect{
+		MinX: startX + panelWidth - 120,
+		MinY: prevButton.MinY,
+		MaxX: startX + panelWidth - 10,
+		MaxY: prevButton.MaxY,
+	}
+
+	return actionPanelLayout{
+		inventoryTab: inventory,
+		cardsTab:     cards,
+		abilitiesTab: abilities,
+		marketTab:    market,
+		escapeTab:    escapeTab,
+		prevButton:   prevButton,
+		nextButton:   nextButton,
+		useButton:    useButton,
+	}
+}
+
+func (s *Shell) drawActionPanels(screen *ebiten.Image, state model.GameState) {
+	if s == nil || s.localPlayerID == "" {
+		return
+	}
+
+	local, found := playerByID(state.Players, s.localPlayerID)
+	if !found {
+		return
+	}
+
+	layout := s.actionPanelLayout()
+	s.drawActionPanelTab(screen, layout.inventoryTab, "Inventory", "Tab", s.panelMode == actionPanelInventory)
+	s.drawActionPanelTab(screen, layout.cardsTab, "Cards", "C", s.panelMode == actionPanelCards)
+	s.drawActionPanelTab(screen, layout.abilitiesTab, "Abilities", "V", s.panelMode == actionPanelAbilities)
+	s.drawActionPanelTab(screen, layout.marketTab, "Market", "B", s.panelMode == actionPanelMarket)
+	s.drawActionPanelTab(screen, layout.escapeTab, "Escape", "X", s.panelMode == actionPanelEscape)
+
+	if s.panelMode == actionPanelNone {
+		return
+	}
+
+	panelX := float32(layout.inventoryTab.MinX)
+	panelY := float32(layout.inventoryTab.MaxY + 10)
+	panelWidth := float32(layout.escapeTab.MaxX - layout.inventoryTab.MinX)
+	panelHeight := float32(layout.useButton.MaxY - layout.inventoryTab.MaxY - 2)
+
+	vector.DrawFilledRect(screen, panelX, panelY, panelWidth, panelHeight, color.RGBA{R: 8, G: 12, B: 18, A: 224}, false)
+	vector.StrokeRect(screen, panelX, panelY, panelWidth, panelHeight, 1, color.RGBA{R: 71, G: 90, B: 110, A: 255}, false)
+
+	title := actionPanelTitle(s.panelMode)
+	text.Draw(screen, title, basicfont.Face7x13, int(panelX)+10, int(panelY)+18, color.RGBA{R: 243, G: 248, B: 255, A: 255})
+
+	entries, selected := s.panelEntriesForDraw(state, local)
+	lineY := int(panelY) + 38
+	if len(entries) == 0 {
+		text.Draw(screen, "No entries available.", basicfont.Face7x13, int(panelX)+10, lineY, color.RGBA{R: 194, G: 204, B: 216, A: 255})
+	} else {
+		maxItems := 7
+		if len(entries) < maxItems {
+			maxItems = len(entries)
+		}
+		start := 0
+		if selected >= maxItems {
+			start = selected - maxItems + 1
+		}
+		for index := start; index < start+maxItems; index++ {
+			line := entries[index]
+			entryColor := color.RGBA{R: 211, G: 221, B: 233, A: 255}
+			if index == selected {
+				entryColor = color.RGBA{R: 250, G: 253, B: 255, A: 255}
+				vector.DrawFilledRect(screen, panelX+8, float32(lineY-12), panelWidth-16, 16, color.RGBA{R: 35, G: 61, B: 86, A: 210}, false)
+			}
+			text.Draw(screen, line, basicfont.Face7x13, int(panelX)+12, lineY, entryColor)
+			lineY += 20
+		}
+	}
+
+	if s.panelMode == actionPanelMarket {
+		offers := marketPanelEntries()
+		if len(offers) > 0 {
+			selectedOffer := offers[clampPanelIndex(s.panelMarketIdx, len(offers))]
+			moneyCards := countCards(local.Cards, model.CardMoney)
+			canBuy, reason := marketOfferUsability(local, state, selectedOffer)
+			statusColor := color.RGBA{R: 197, G: 209, B: 223, A: 255}
+			if !canBuy {
+				statusColor = color.RGBA{R: 242, G: 185, B: 131, A: 255}
+			}
+			detail := fmt.Sprintf("Money %d | Cost %d | %s", moneyCards, selectedOffer.MoneyCardCost, reason)
+			text.Draw(screen, detail, basicfont.Face7x13, int(panelX)+10, int(layout.prevButton.MinY)-24, statusColor)
+		}
+	}
+	if s.panelMode == actionPanelEscape {
+		evaluations := escapePanelEntries(local, state.Map)
+		if len(evaluations) > 0 {
+			selectedEval := evaluations[clampPanelIndex(s.panelEscapeIdx, len(evaluations))]
+			detailColor := color.RGBA{R: 197, G: 209, B: 223, A: 255}
+			summary := "READY"
+			if !selectedEval.CanAttempt {
+				summary = selectedEval.FailureReason
+				detailColor = color.RGBA{R: 242, G: 185, B: 131, A: 255}
+			}
+			text.Draw(screen, summary, basicfont.Face7x13, int(panelX)+10, int(layout.prevButton.MinY)-38, detailColor)
+			text.Draw(screen, fmt.Sprintf("Last: %s", formatEscapeAttemptFeedback(local.LastEscapeAttempt)), basicfont.Face7x13, int(panelX)+10, int(layout.prevButton.MinY)-24, color.RGBA{R: 188, G: 202, B: 218, A: 255})
+		}
+	}
+	if local.LastActionFeedback.Kind != "" && local.LastActionFeedback.TickID > 0 {
+		text.Draw(
+			screen,
+			fmt.Sprintf("Event: %s", formatActionFeedback(local.LastActionFeedback)),
+			basicfont.Face7x13,
+			int(panelX)+10,
+			int(layout.prevButton.MinY)-10,
+			color.RGBA{R: 188, G: 202, B: 218, A: 255},
+		)
+	}
+
+	s.drawActionPanelButton(screen, layout.prevButton, "Prev")
+	s.drawActionPanelButton(screen, layout.nextButton, "Next")
+	s.drawActionPanelButton(screen, layout.useButton, "Use")
+}
+
+func (s *Shell) drawActionPanelTab(screen *ebiten.Image, rect input.Rect, title string, shortcut string, selected bool) {
+	fill := color.RGBA{R: 22, G: 30, B: 39, A: 212}
+	border := color.RGBA{R: 68, G: 85, B: 104, A: 255}
+	if selected {
+		fill = color.RGBA{R: 44, G: 67, B: 92, A: 224}
+		border = color.RGBA{R: 160, G: 197, B: 232, A: 255}
+	}
+
+	x := float32(rect.MinX)
+	y := float32(rect.MinY)
+	w := float32(rect.MaxX - rect.MinX)
+	h := float32(rect.MaxY - rect.MinY)
+	vector.DrawFilledRect(screen, x, y, w, h, fill, false)
+	vector.StrokeRect(screen, x, y, w, h, 1, border, false)
+
+	text.Draw(screen, title, basicfont.Face7x13, int(rect.MinX)+8, int(rect.MinY)+15, color.RGBA{R: 240, G: 246, B: 252, A: 255})
+	text.Draw(screen, shortcut, basicfont.Face7x13, int(rect.MaxX)-20, int(rect.MinY)+15, color.RGBA{R: 191, G: 207, B: 222, A: 255})
+}
+
+func (s *Shell) drawActionPanelButton(screen *ebiten.Image, rect input.Rect, label string) {
+	x := float32(rect.MinX)
+	y := float32(rect.MinY)
+	w := float32(rect.MaxX - rect.MinX)
+	h := float32(rect.MaxY - rect.MinY)
+	vector.DrawFilledRect(screen, x, y, w, h, color.RGBA{R: 27, G: 39, B: 53, A: 220}, false)
+	vector.StrokeRect(screen, x, y, w, h, 1, color.RGBA{R: 91, G: 116, B: 138, A: 255}, false)
+
+	labelX := int(rect.MinX + ((rect.MaxX - rect.MinX) / 2) - float64(len(label)*3))
+	labelY := int(rect.MinY + ((rect.MaxY - rect.MinY) / 2) + 4)
+	text.Draw(screen, label, basicfont.Face7x13, labelX, labelY, color.RGBA{R: 236, G: 244, B: 251, A: 255})
+}
+
+func actionPanelTitle(mode actionPanelMode) string {
+	switch mode {
+	case actionPanelInventory:
+		return "Inventory (use selected item)"
+	case actionPanelCards:
+		return "Cards (consume selected card)"
+	case actionPanelAbilities:
+		return "Abilities (activate selected ability)"
+	case actionPanelMarket:
+		return "Black Market (buy items with money cards)"
+	case actionPanelEscape:
+		return "Escape Routes (attempt selected route)"
+	default:
+		return "Action Panel"
+	}
+}
+
+func (s *Shell) panelEntriesForDraw(state model.GameState, local model.PlayerState) ([]string, int) {
+	switch s.panelMode {
+	case actionPanelInventory:
+		entries := inventoryPanelEntries(local)
+		lines := make([]string, 0, len(entries))
+		for index, entry := range entries {
+			lines = append(lines, fmt.Sprintf("%d. %s x%d", index+1, entry.Item, entry.Quantity))
+		}
+		return lines, clampPanelIndex(s.panelInventoryIdx, len(lines))
+
+	case actionPanelCards:
+		entries := cardPanelEntries(local)
+		lines := make([]string, 0, len(entries))
+		for index, entry := range entries {
+			lines = append(lines, fmt.Sprintf("%d. %s", index+1, entry))
+		}
+		return lines, clampPanelIndex(s.panelCardsIdx, len(lines))
+
+	case actionPanelAbilities:
+		entries := abilityPanelEntries(local)
+		lines := make([]string, 0, len(entries))
+		for index, entry := range entries {
+			lines = append(lines, fmt.Sprintf("%d. %s", index+1, entry))
+		}
+		return lines, clampPanelIndex(s.panelAbilitiesIdx, len(lines))
+
+	case actionPanelMarket:
+		entries := marketPanelEntries()
+		lines := make([]string, 0, len(entries))
+		for index, offer := range entries {
+			canBuy, _ := marketOfferUsability(local, state, offer)
+			status := "LOCKED"
+			if canBuy {
+				status = "READY"
+			}
+			lines = append(lines, fmt.Sprintf("%d. %s x%d  M%d  %s", index+1, offer.Item, offer.Quantity, offer.MoneyCardCost, status))
+		}
+		return lines, clampPanelIndex(s.panelMarketIdx, len(lines))
+
+	case actionPanelEscape:
+		entries := escapePanelEntries(local, state.Map)
+		lines := make([]string, 0, len(entries))
+		for index, entry := range entries {
+			stateText := "BLOCKED"
+			if entry.CanAttempt {
+				stateText = "READY"
+			}
+			lines = append(lines, fmt.Sprintf("%d. %s  %s  %s", index+1, entry.RouteLabel, stateText, requirementSummary(entry.Requirements)))
+		}
+		return lines, clampPanelIndex(s.panelEscapeIdx, len(entries))
+	}
+
+	return nil, 0
+}

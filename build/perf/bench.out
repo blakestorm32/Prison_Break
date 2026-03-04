@@ -1,0 +1,14 @@
+﻿goos: windows
+goarch: amd64
+pkg: prison-break/internal/client/netclient
+cpu: AMD Ryzen 7 5700                               
+BenchmarkSnapshotStoreApplyDelta-16    	  286669	      3548 ns/op	   10176 B/op	      21 allocs/op
+PASS
+ok  	prison-break/internal/client/netclient	1.651s
+goos: windows
+goarch: amd64
+pkg: prison-break/internal/server/matchmaking
+cpu: AMD Ryzen 7 5700                               
+BenchmarkMatchmakingRegionAllocation-16    	   18428	     66297 ns/op	   51709 B/op	     404 allocs/op
+PASS
+ok  	prison-break/internal/server/matchmaking	2.226s

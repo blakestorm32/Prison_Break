@@ -1,0 +1,388 @@
+PRISON BREAK – REAL-TIME SOCIAL DEDUCTION GAME
+=============================================
+
+GAME OVERVIEW
+-------------
+A real-time, 2D top-down, tile-based multiplayer social deduction game set in a high-security prison.
+
+Players move and act simultaneously in real time.
+Hidden roles, asymmetric win conditions, spatial control, and multiple escape paths drive deception.
+
+The game progresses through real-time DAY / NIGHT cycles.
+The game emphasizes movement, access permissions, items, and information control.
+
+Target player count: 5–12 players.
+
+
+CORE GAME FLOW
+--------------
+- The game runs continuously in real time.
+- The game alternates between DAY and NIGHT phases.
+- Certain abilities, cards, and systems reset or trigger on phase changes.
+
+The game ends immediately when ANY global end condition is met.
+
+
+GLOBAL END CONDITIONS
+---------------------
+- 10 day/night cycles complete
+- Warden dies
+- Gang Leader escapes
+- All gang members die
+
+
+ROLES
+-----
+
+AUTHORITIES
+-----------
+Warden
+- Alignment: Good OR Evil (random per game)
+- Hearts: 5
+- Bullets: 3
+- Baton: Yes
+- Win Conditions:
+  - Good Warden: No prisoners escape
+  - Evil Warden: Gang Leader escapes
+- Special Ability:
+  - Alarm (once per day):
+      - Triggers prison-wide alarm remotely
+      - Alarm lasts 5 seconds
+      - If no prisoners are in restricted areas, alarm auto-stops
+      - If prisoners are in restricted areas:
+          - NPC prison guards begin shooting them
+
+Deputy
+- Alignment: Good OR Evil
+- Hearts: 4
+- Bullets: 3
+- Baton: Yes
+- Win Conditions (rotates per game):
+  - Detective: Kill the Gang Leader
+  - Guard: No one escapes after 10 day/night cycles
+  - Evil Deputy: Gang Leader escapes
+- Base Ability:
+  - Search (once per day):
+      - Search EITHER a player OR a cell
+      - Confiscate contraband found
+
+
+PRISONERS
+---------
+Gang Leader
+- Hearts: 3
+- Win Conditions:
+  - Escape the prison
+  - Kill the Warden
+- Special:
+  - Chooses Black Market location each NIGHT
+  - May privately tell chosen players the location
+
+Gang Member
+- Hearts: 3
+- Win Conditions:
+  - Gang Leader escapes
+  - Warden is killed
+- Succession Rule:
+  - If Gang Leader dies:
+      - One surviving Gang Member becomes the new Gang Leader
+      - If multiple exist, selection is random
+
+Snitch (Good Prisoner)
+- Hearts: 3
+- Win Condition:
+  - Gang Leader is killed
+  - OR no gang members escape by end of game
+
+Neutral Prisoner
+- Hearts: 3
+- Alignment: Neutral
+- Win Conditions (rotates per game):
+  - Hitman: Assigned a random target; must personally kill them
+  - Escape Artist: Escape before anyone else
+
+
+PLAYER COUNT CONFIGURATIONS
+---------------------------
+
+6 PLAYERS
+---------
+A)
+- 2 Authorities (Good)
+- 3 Gang Members
+- 1 Snitch
+
+B)
+- 2 Authorities (Good)
+- 2 Gang Members
+- 2 Neutrals
+
+C)
+- 1 Authority (Good)
+- 1 Authority (Bad)
+- 2 Gang Members
+- 1 Snitch
+- 1 Neutral
+
+
+7 PLAYERS
+---------
+A)
+- 3 Authorities (Good)
+- 3 Gang Members
+- 1 Neutral
+
+B)
+- 2 Authorities (Good)
+- 1 Authority (Bad)
+- 2 Gang Members
+- 1 Snitch
+- 1 Neutral
+
+
+8 PLAYERS
+---------
+A)
+- 3 Authorities (Good)
+- 4 Gang Members
+- 1 Neutral
+
+B)
+- 3 Authorities (2 Good, 1 Bad)
+- 3 Gang Members
+- 1 Snitch
+- 1 Neutral
+
+
+9 PLAYERS
+---------
+(Same as 8 players, plus 1 additional Neutral)
+
+
+10 PLAYERS
+----------
+A)
+- 4 Authorities (3 Good, 1 Bad)
+- 4 Gang Members
+- 1 Snitch
+- 1 Neutral
+
+B)
+- 4 Authorities (Good)
+- 5 Gang Members
+- 1 Neutral
+
+C)
+- 4 Authorities (2 Good, 2 Bad)
+- 2 Gang Members
+- 2 Snitches
+- 2 Neutrals
+
+
+11 PLAYERS
+----------
+- Add 1 Gang Member to each 10-player configuration
+
+
+12 PLAYERS (MAX)
+---------------
+A)
+- 5 Authorities (3 Good, 2 Bad)
+- 4 Gang Members
+- 2 Snitches
+- 1 Neutral
+
+B)
+- 5 Authorities (Good)
+- 7 Gang Members
+
+C)
+- 5 Authorities (3 Good, 2 Bad)
+- 3 Gang Members
+- 2 Snitches
+- 2 Neutrals
+
+
+BOARD / MAP
+-----------
+2D tile grid with rooms and corridors.
+
+Rooms:
+- Prison Cells (1 per player)
+- Warden’s HQ
+- Camera Room
+- Cafeteria
+- Courtyard
+- Power Room
+- Ammunition Room
+- Mail Room
+- Roof Lookout
+- Black Market (rotates nightly)
+
+Corridors connect all rooms.
+
+
+ACCESS RULES
+------------
+Cells:
+- Each player has one assigned cell
+- Only cell owner or Authorities can open/close cell door
+- Any player may be locked inside any cell
+
+Warden HQ:
+- Only Warden may enter
+
+Camera Room:
+- Authorities only
+- Disabled if power is off
+
+Black Market:
+- Prisoners only
+- Location set nightly by Gang Leader
+
+
+POWER SYSTEM
+------------
+Power ON:
+- Cameras active
+- Ammo room accessible
+- Doors open/close normally
+
+Power OFF:
+- Cameras disabled
+- Ammo room locked
+- Doors open but cannot be closed
+
+
+COMBAT & PENALTIES
+------------------
+Weapons:
+- Baton (Authorities):
+    - No damage
+    - Knocks player back
+    - Stuns for 3 seconds
+    - Cooldown applies
+    - No penalty for use
+
+- Shiv:
+    - Deals 0.5 heart damage
+    - Silent
+
+- Guns:
+    - Require bullets
+    - Standard damage: 1 heart
+
+- Golden Bullet:
+    - One per game
+    - Deals 2 hearts damage
+
+Authority Shooting Penalty:
+- If Warden or Deputy shoots a player:
+    - Locked in quarters for rest of DAY
+EXCEPT IF:
+    - Target is in restricted area
+    - Power is off
+    - Target is holding illegal contraband
+      (gun, shiv, ladder, shovel, wire cutters)
+
+
+ESCAPE ROUTES
+-------------
+- Courtyard Dig (shovel)
+- Badge Escape
+- Power-Out Escape
+- Ladder Escape (requires 2 ladders)
+- Roof / Helicopter Escape (requires keys)
+
+
+BLACK MARKET ITEMS
+------------------
+- Wood
+- Metal slab
+- Shiv
+- Bullet
+- Pistol
+- Hunting rifle
+- Lock pick
+- Wire cutters
+- Silencer
+- Satchel
+- Door Stop
+- Golden Bullet (1 per game)
+
+
+FACTION ABILITIES
+-----------------
+
+AUTHORITIES (one per authority)
+--------------------------------
+- Camera Man
+- Search
+- Detainer
+- Tracker
+
+PRISONERS (one per prisoner)
+-----------------------------
+- Pick Pocket
+- Hacker
+- Disguise
+- Locksmith
+- Chameleon
+
+
+CARDS SYSTEM
+------------
+- Players may store up to 3 cards
+- Cards are one-time use
+- Cards may be used at any time unless stated otherwise
+
+
+CARDS
+-----
+Morphine
+- Restore 1 heart
+
+Bullet
+- Gain +1 bullet
+
+Money
+- Usable in Black Market
+- Can bribe NPC prisoners
+
+Speed
+- Temporary movement speed boost
+
+Armor Plate
+- Next round, gain +1 temporary heart
+
+Lock Snap
+- Next round, break one lock
+- Lock repaired after round
+
+Item Steal
+- Choose a player and steal a specific item
+
+Item Grab
+- Choose a player and gain a random item
+
+Scrap Bundle
+- Gain crafting material
+
+Door Stop
+- Lock a door for 10 seconds
+
+Get Out of Jail Free
+- Prisoner: removes solitary confinement
+- Authority: removes penalty for unjust shooting
+
+
+DESIGN PRINCIPLES
+-----------------
+- Real-time play
+- No voting mechanics
+- Abilities are faction-based
+- Cards are consumable, tactical, and goal-agnostic
+- Multiple overlapping win conditions
+- Spatial control replaces social voting
+
+END OF DOCUMENT

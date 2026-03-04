@@ -1,0 +1,505 @@
+PRISON BREAK
+Architecture & Repository Layout
+
+2D Real-Time Multiplayer Game (Go + Ebiten)
+
+1. High-Level Architecture
+Core Principles
+
+Server authoritative simulation
+
+Clients send inputs only
+
+Fixed tick rate simulation
+
+Deterministic game core
+
+Shared game model between client and server
+
+Thin client, thick server
+
+Mobile + Desktop support via Ebiten
+
+Stateless gateway layer (optional for scale)
+
+Runtime Architecture
+Clients (Mobile/Desktop)
+    |
+    |  WebSocket (JSON or Protobuf)
+    v
+Game Server (Go)
+    |
+    |  Authoritative Simulation Loop (fixed tick)
+    |
+State Broadcast (delta snapshots)
+Simulation Model
+
+Server runs fixed timestep loop (e.g. 30 or 60 ticks/sec)
+
+Each tick:
+
+Consume queued player inputs
+
+Apply to deterministic world state
+
+Resolve combat, abilities, timers
+
+Evaluate win conditions
+
+Emit state delta
+
+Clients:
+
+Send input commands with timestamp
+
+Receive authoritative snapshots
+
+Interpolate between snapshots
+
+Never simulate authority-only logic
+
+2. Monorepo Layout
+prison-break/
+│
+├── cmd/
+│   ├── server/
+│   │   └── main.go
+│   ├── client/
+│   │   └── main.go
+│   └── tools/
+│       └── mapgen/
+│
+├── internal/
+│   ├── server/
+│   │   ├── game/
+│   │   ├── networking/
+│   │   ├── matchmaking/
+│   │   └── persistence/
+│   │
+│   ├── client/
+│   │   ├── render/
+│   │   ├── input/
+│   │   ├── ui/
+│   │   ├── prediction/
+│   │   └── netclient/
+│   │
+│   ├── engine/
+│   │   ├── ecs/
+│   │   ├── physics/
+│   │   ├── pathfinding/
+│   │   └── timers/
+│   │
+│   ├── gamecore/
+│   │   ├── roles/
+│   │   ├── items/
+│   │   ├── combat/
+│   │   ├── abilities/
+│   │   ├── cards/
+│   │   ├── map/
+│   │   ├── phase/
+│   │   └── winconditions/
+│   │
+│   ├── shared/
+│   │   ├── model/
+│   │   ├── protocol/
+│   │   └── constants/
+│   │
+│   └── util/
+│
+├── assets/
+│   ├── sprites/
+│   ├── tiles/
+│   ├── audio/
+│   └── fonts/
+│
+├── build/
+│   ├── docker/
+│   ├── ios/
+│   └── android/
+│
+├── go.mod
+└── README.md
+3. Package Responsibilities
+cmd/
+
+Entry points only. No logic.
+
+server/main.go → boot server
+
+client/main.go → boot Ebiten client
+
+internal/server/
+game/
+
+Game session manager
+
+Tick loop
+
+Player registry
+
+Match lifecycle
+
+Snapshot generation
+
+Delta compression
+
+networking/
+
+WebSocket handlers
+
+Message parsing
+
+Connection lifecycle
+
+Rate limiting
+
+Anti-spam
+
+matchmaking/
+
+Lobby system
+
+Player queue
+
+Game creation
+
+persistence/ (optional early stage)
+
+Player stats
+
+Account data
+
+Replay storage
+
+internal/client/
+render/
+
+Ebiten drawing
+
+Sprite batching
+
+Camera system
+
+Tile rendering
+
+Interpolation layer
+
+input/
+
+Keyboard
+
+Touch joystick
+
+Action buttons
+
+Input buffering
+
+ui/
+
+Pure Go UI components
+
+Menus
+
+HUD
+
+Role display
+
+Cooldowns
+
+Card slots
+
+prediction/
+
+Client-side interpolation
+
+Local smoothing
+
+Latency compensation
+
+netclient/
+
+WebSocket client
+
+Snapshot handler
+
+Reconciliation
+
+internal/engine/
+
+Reusable game engine systems.
+
+ecs/
+
+Entity ID
+
+Component storage
+
+Systems
+
+Query engine
+
+physics/
+
+Collision grid
+
+Tile blocking
+
+Knockback
+
+Stun timers
+
+pathfinding/
+
+A* for NPC guards
+
+timers/
+
+Cooldowns
+
+Phase timers
+
+Alarm duration
+
+internal/gamecore/
+
+Pure deterministic game rules.
+No networking. No rendering.
+
+This must be importable by both server and client.
+
+roles/
+
+Role definitions
+
+Alignment logic
+
+Succession logic
+
+items/
+
+Inventory
+
+Crafting
+
+Contraband tagging
+
+combat/
+
+Damage system
+
+Authority penalties
+
+Stun effects
+
+abilities/
+
+Ability execution logic
+
+Cooldowns
+
+Validation
+
+cards/
+
+Card execution
+
+Limits
+
+Storage
+
+map/
+
+Tile grid
+
+Restricted zones
+
+Door states
+
+Power state
+
+phase/
+
+Day/Night transitions
+
+Reset hooks
+
+winconditions/
+
+All global win evaluation logic
+
+internal/shared/
+
+Shared between client and server.
+
+model/
+
+PlayerState
+
+EntityState
+
+GameState
+
+Snapshot
+
+InputCommand
+
+Must remain serializable.
+
+protocol/
+
+Message types
+
+Serialization (JSON or Protobuf)
+
+Envelope structures
+
+Example:
+
+Client → Server:
+    JoinGame
+    PlayerInput
+    AbilityUse
+    CardUse
+
+Server → Client:
+    Snapshot
+    GameStart
+    PhaseChange
+    GameOver
+constants/
+
+Tick rate
+
+Max players
+
+Movement speed
+
+Cooldown durations
+
+4. Simulation Loop (Server)
+
+Pseudo:
+
+for range ticker.C {
+    inputs := inputBuffer.Consume()
+    game.ApplyInputs(inputs)
+    game.Update()
+    snapshot := game.GenerateDelta()
+    broadcaster.Broadcast(snapshot)
+}
+
+Single-threaded simulation loop.
+Networking runs in separate goroutines.
+All world mutation happens inside game loop thread.
+
+No race conditions allowed.
+
+5. Networking Model
+Transport
+
+Start with:
+
+WebSockets
+
+Binary encoding (Protobuf preferred later)
+
+UDP not required for 5–12 players.
+
+Snapshot Strategy
+
+Full snapshot on join
+
+Delta snapshots per tick
+
+Send only changed entities
+
+Include server tick ID
+
+Client interpolates between last 2 snapshots.
+
+6. Mobile Considerations
+
+Abstract input layer
+
+Joystick component
+
+Avoid overdraw
+
+Sprite atlas batching
+
+Fixed timestep independent of render framerate
+
+Lock simulation at 30 ticks on mobile
+
+7. Scaling Strategy
+
+For 5–12 players per match:
+
+One goroutine per match
+
+Horizontal scale by spawning match instances
+
+Stateless matchmaker
+
+Redis optional for lobby tracking
+
+8. Testing Strategy
+internal/gamecore/ → pure logic tests
+internal/server/game → integration tests
+network layer → fuzz tests
+
+Determinism tests:
+
+Same seed + same input → identical final state
+
+9. Future Expansion
+
+Replay system (store input logs)
+
+Spectator mode
+
+Dedicated server container
+
+Region routing
+
+ELO ranking
+
+10. Development Phases
+
+Singleplayer deterministic simulation
+
+LAN multiplayer
+
+Remote WebSocket multiplayer
+
+Snapshot interpolation
+
+Mobile build pipeline
+
+Matchmaking + lobby
+
+Persistence layer
+
+This structure keeps:
+
+Game rules isolated
+
+Networking clean
+
+Client thin
+
+Server authoritative
+
+Mobile-friendly
+
+Scalable to thousands of concurrent matches
+
+If you want, I can now generate:
+
+The exact shared GameState struct layout
+
+A deterministic tick contract spec
+
+Or the ECS schema tuned for this specific game
+
+Just tell me which direction you want to go next

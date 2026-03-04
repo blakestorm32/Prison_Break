@@ -1,0 +1,40 @@
+name: prison-break-ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  qa-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          check-latest: true
+
+      - name: Unit and integration tests
+        run: go test ./...
+
+      - name: Determinism gate
+        run: go test -count=1 -run Determin ./internal/gamecore/determinism ./internal/server/game ./internal/client/prediction
+
+      - name: Fuzz smoke gate
+        run: |
+          go test -run '^$' -fuzz '^FuzzDecodeJoinGameRequestDoesNotPanic$' -fuzztime=5s ./internal/shared/protocol
+          go test -run '^$' -fuzz '^FuzzDecodePlayerInputMessageDoesNotPanic$' -fuzztime=5s ./internal/shared/protocol
+          go test -run '^$' -fuzz '^FuzzDecodeReplayLogRequestDoesNotPanic$' -fuzztime=5s ./internal/shared/protocol
+          go test -run '^$' -fuzz '^FuzzEnvelopeDecodeAndTypedPayloadUnmarshalDoesNotPanic$' -fuzztime=5s ./internal/server/networking
+
+      - name: Docker build path
+        run: docker build -f build/docker/Dockerfile.server -t prison-break/server:ci .
+
+      - name: Mobile build path checks
+        run: |
+          test -f build/android/build_android.ps1
+          test -f build/ios/build_ios.sh
