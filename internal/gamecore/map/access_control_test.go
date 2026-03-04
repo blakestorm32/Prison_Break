@@ -66,25 +66,66 @@ func TestEvaluateRoomEntryCameraRoomAuthorityAndPowerRules(t *testing.T) {
 	}
 }
 
-func TestEvaluateRoomEntryAmmoRoomPowerRule(t *testing.T) {
+func TestEvaluateRoomEntryPowerRoomAuthorityRule(t *testing.T) {
 	layout := DefaultPrisonLayout()
 	mapState := layout.ToMapState()
 
-	player := model.PlayerState{
+	authority := model.PlayerState{
+		ID:      "authority",
+		Role:    model.RoleDeputy,
+		Faction: model.FactionAuthority,
+	}
+	prisoner := model.PlayerState{
 		ID:      "player",
 		Role:    model.RoleGangMember,
 		Faction: model.FactionPrisoner,
 	}
 
-	powerOnDecision := EvaluateRoomEntry(player, RoomAmmoRoom, mapState)
-	if !powerOnDecision.Allowed {
-		t.Fatalf("expected ammo room to be enterable while power on, got %#v", powerOnDecision)
+	authorityDecision := EvaluateRoomEntry(authority, RoomPowerRoom, mapState)
+	if !authorityDecision.Allowed {
+		t.Fatalf("expected authority to enter power room, got %#v", authorityDecision)
+	}
+
+	prisonerDecision := EvaluateRoomEntry(prisoner, RoomPowerRoom, mapState)
+	if prisonerDecision.Allowed || prisonerDecision.Verdict != AccessDenyPowerRoomAuthorityOnly {
+		t.Fatalf("expected prisoner denied power room by authority rule, got %#v", prisonerDecision)
+	}
+}
+
+func TestEvaluateRoomEntryAmmoRoomAuthorityAndPowerRules(t *testing.T) {
+	layout := DefaultPrisonLayout()
+	mapState := layout.ToMapState()
+
+	authority := model.PlayerState{
+		ID:      "authority",
+		Role:    model.RoleDeputy,
+		Faction: model.FactionAuthority,
+	}
+	prisoner := model.PlayerState{
+		ID:      "prisoner",
+		Role:    model.RoleGangMember,
+		Faction: model.FactionPrisoner,
+	}
+
+	authorityDecision := EvaluateRoomEntry(authority, RoomAmmoRoom, mapState)
+	if !authorityDecision.Allowed {
+		t.Fatalf("expected authority to enter ammo room while power on, got %#v", authorityDecision)
+	}
+
+	prisonerDecision := EvaluateRoomEntry(prisoner, RoomAmmoRoom, mapState)
+	if prisonerDecision.Allowed || prisonerDecision.Verdict != AccessDenyAmmoAuthorityOnly {
+		t.Fatalf("expected prisoner denied ammo room by authority rule, got %#v", prisonerDecision)
 	}
 
 	mapState.PowerOn = false
-	powerOffDecision := EvaluateRoomEntry(player, RoomAmmoRoom, mapState)
+	powerOffDecision := EvaluateRoomEntry(authority, RoomAmmoRoom, mapState)
 	if powerOffDecision.Allowed || powerOffDecision.Verdict != AccessDenyAmmoPowerOff {
 		t.Fatalf("expected ammo room denied when power off, got %#v", powerOffDecision)
+	}
+
+	powerOffPrisonerDecision := EvaluateRoomEntry(prisoner, RoomAmmoRoom, mapState)
+	if powerOffPrisonerDecision.Allowed || powerOffPrisonerDecision.Verdict != AccessDenyAmmoPowerOff {
+		t.Fatalf("expected power-off ammo rule to take precedence, got %#v", powerOffPrisonerDecision)
 	}
 }
 

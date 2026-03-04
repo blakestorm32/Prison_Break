@@ -10,6 +10,8 @@ const (
 	AccessDenyWardenHQRestricted       AccessVerdict = "deny_warden_hq_restricted"
 	AccessDenyCameraAuthorityOnly      AccessVerdict = "deny_camera_authority_only"
 	AccessDenyCameraPowerOff           AccessVerdict = "deny_camera_power_off"
+	AccessDenyPowerRoomAuthorityOnly   AccessVerdict = "deny_power_room_authority_only"
+	AccessDenyAmmoAuthorityOnly        AccessVerdict = "deny_ammo_authority_only"
 	AccessDenyAmmoPowerOff             AccessVerdict = "deny_ammo_power_off"
 	AccessDenyBlackMarketPrisonersOnly AccessVerdict = "deny_black_market_prisoners_only"
 	AccessDenyCellDoorForbidden        AccessVerdict = "deny_cell_door_forbidden"
@@ -76,10 +78,22 @@ func EvaluateRoomEntry(player model.PlayerState, roomID model.RoomID, mapState m
 			return decision
 		}
 		return decision
+	case RoomPowerRoom:
+		if !IsAuthorityPlayer(player) {
+			decision.Allowed = false
+			decision.Verdict = AccessDenyPowerRoomAuthorityOnly
+			return decision
+		}
+		return decision
 	case RoomAmmoRoom:
 		if !mapState.PowerOn {
 			decision.Allowed = false
 			decision.Verdict = AccessDenyAmmoPowerOff
+			return decision
+		}
+		if !IsAuthorityPlayer(player) {
+			decision.Allowed = false
+			decision.Verdict = AccessDenyAmmoAuthorityOnly
 			return decision
 		}
 		return decision

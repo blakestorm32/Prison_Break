@@ -421,14 +421,50 @@ func TestInteractRoomAccessRestrictions(t *testing.T) {
 		t.Fatalf("expected deputy allowed into camera room while power on, got %s", room)
 	}
 
-	setMapPowerForTest(manager, match.MatchID, false)
 	setPlayerRoomForTest(manager, match.MatchID, "deputy", gamemap.RoomCorridorMain)
-
+	setPlayerRoomForTest(manager, match.MatchID, "prisoner", gamemap.RoomCorridorMain)
+	mustSubmitInteract(t, manager, match.MatchID, "prisoner", 3, model.InteractPayload{
+		TargetRoomID: gamemap.RoomPowerRoom,
+	})
 	mustSubmitInteract(t, manager, match.MatchID, "deputy", 2, model.InteractPayload{
-		TargetRoomID: gamemap.RoomCameraRoom,
+		TargetRoomID: gamemap.RoomPowerRoom,
 	})
 	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 2, 0, time.UTC))
 	waitForTick(t, manager, match.MatchID, 2)
+
+	if room := playerRoomForTest(manager, match.MatchID, "prisoner"); room != gamemap.RoomCorridorMain {
+		t.Fatalf("expected prisoner blocked from power room, got %s", room)
+	}
+	if room := playerRoomForTest(manager, match.MatchID, "deputy"); room != gamemap.RoomPowerRoom {
+		t.Fatalf("expected deputy allowed into power room, got %s", room)
+	}
+
+	setPlayerRoomForTest(manager, match.MatchID, "deputy", gamemap.RoomCorridorMain)
+	setPlayerRoomForTest(manager, match.MatchID, "prisoner", gamemap.RoomCorridorMain)
+	mustSubmitInteract(t, manager, match.MatchID, "prisoner", 4, model.InteractPayload{
+		TargetRoomID: gamemap.RoomAmmoRoom,
+	})
+	mustSubmitInteract(t, manager, match.MatchID, "deputy", 3, model.InteractPayload{
+		TargetRoomID: gamemap.RoomAmmoRoom,
+	})
+	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 3, 0, time.UTC))
+	waitForTick(t, manager, match.MatchID, 3)
+
+	if room := playerRoomForTest(manager, match.MatchID, "prisoner"); room != gamemap.RoomCorridorMain {
+		t.Fatalf("expected prisoner blocked from ammo room, got %s", room)
+	}
+	if room := playerRoomForTest(manager, match.MatchID, "deputy"); room != gamemap.RoomAmmoRoom {
+		t.Fatalf("expected deputy allowed into ammo room while power on, got %s", room)
+	}
+
+	setMapPowerForTest(manager, match.MatchID, false)
+	setPlayerRoomForTest(manager, match.MatchID, "deputy", gamemap.RoomCorridorMain)
+
+	mustSubmitInteract(t, manager, match.MatchID, "deputy", 4, model.InteractPayload{
+		TargetRoomID: gamemap.RoomCameraRoom,
+	})
+	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 4, 0, time.UTC))
+	waitForTick(t, manager, match.MatchID, 4)
 
 	if room := playerRoomForTest(manager, match.MatchID, "deputy"); room != gamemap.RoomCorridorMain {
 		t.Fatalf("expected deputy blocked from camera room when power off, got %s", room)
@@ -438,14 +474,14 @@ func TestInteractRoomAccessRestrictions(t *testing.T) {
 	setPlayerRoomForTest(manager, match.MatchID, "deputy", gamemap.RoomCorridorMain)
 	setPlayerRoomForTest(manager, match.MatchID, "prisoner", gamemap.RoomCorridorMain)
 
-	mustSubmitInteract(t, manager, match.MatchID, "deputy", 3, model.InteractPayload{
+	mustSubmitInteract(t, manager, match.MatchID, "deputy", 5, model.InteractPayload{
 		TargetRoomID: gamemap.RoomBlackMarket,
 	})
-	mustSubmitInteract(t, manager, match.MatchID, "prisoner", 3, model.InteractPayload{
+	mustSubmitInteract(t, manager, match.MatchID, "prisoner", 5, model.InteractPayload{
 		TargetRoomID: gamemap.RoomBlackMarket,
 	})
-	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 3, 0, time.UTC))
-	waitForTick(t, manager, match.MatchID, 3)
+	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 5, 0, time.UTC))
+	waitForTick(t, manager, match.MatchID, 5)
 
 	if room := playerRoomForTest(manager, match.MatchID, "deputy"); room != gamemap.RoomCorridorMain {
 		t.Fatalf("expected authority blocked from black market, got %s", room)

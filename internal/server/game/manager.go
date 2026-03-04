@@ -114,6 +114,7 @@ type matchSession struct {
 	abilityCooldownUntil        map[model.PlayerID]map[model.AbilityType]uint64
 	abilityUsedDayStart         map[model.PlayerID]map[model.AbilityType]uint64
 	abilityDailyUsage           map[model.PlayerID]map[model.AbilityType]dailyAbilityUsage
+	prisonerUnlockedRooms       map[model.RoomID]struct{}
 	lockSnapDoorRestores        map[model.DoorID]lockSnapDoorRestoreState
 	npcPrisonerBribeState       map[model.EntityID]npcPrisonerBribeState
 	npcTaskByPlayer             map[model.PlayerID]npcTaskState
@@ -268,6 +269,7 @@ func (m *Manager) CreateMatch() MatchSnapshot {
 		abilityCooldownUntil:   make(map[model.PlayerID]map[model.AbilityType]uint64),
 		abilityUsedDayStart:    make(map[model.PlayerID]map[model.AbilityType]uint64),
 		abilityDailyUsage:      make(map[model.PlayerID]map[model.AbilityType]dailyAbilityUsage),
+		prisonerUnlockedRooms:  make(map[model.RoomID]struct{}),
 		lockSnapDoorRestores:   make(map[model.DoorID]lockSnapDoorRestoreState),
 		npcPrisonerBribeState:  make(map[model.EntityID]npcPrisonerBribeState),
 		npcTaskByPlayer:        make(map[model.PlayerID]npcTaskState),
@@ -485,6 +487,7 @@ func (m *Manager) StartMatch(matchID model.MatchID) (MatchSnapshot, error) {
 	session.guardLastShotTick = make(map[model.PlayerID]uint64)
 	session.abilityCooldownUntil = make(map[model.PlayerID]map[model.AbilityType]uint64)
 	session.abilityUsedDayStart = make(map[model.PlayerID]map[model.AbilityType]uint64)
+	session.prisonerUnlockedRooms = make(map[model.RoomID]struct{})
 	session.lockSnapDoorRestores = make(map[model.DoorID]lockSnapDoorRestoreState)
 	session.npcPrisonerBribeState = make(map[model.EntityID]npcPrisonerBribeState)
 	session.replayEntries = make([]ReplayEntry, 0, 256)
@@ -2382,7 +2385,7 @@ func tryMovePlayerToRoomLocked(
 	if err != nil || !access.Reachable {
 		return false
 	}
-	if !gamemap.CanEnterRoom(*player, targetRoomID, session.gameState.Map) {
+	if !canPlayerEnterRoomLocked(session, *player, targetRoomID, session.gameState.Map) {
 		return false
 	}
 	if player.CurrentRoomID == targetRoomID {
@@ -2763,11 +2766,25 @@ func applyAbilityCommandLocked(
 			door.Open = true
 			changed = true
 		}
-		if changed {
-			changedDoors[door.ID] = struct{}{}
+		unlockedRoomID, unlockedRoom := unlockRoomForPrisonersFromDoorLocked(session, *door)
+		if changed || unlockedRoom {
+			if changed {
+				changedDoors[door.ID] = struct{}{}
+			}
 			applied = true
 			feedbackKind = model.ActionFeedbackKindDoor
-			feedbackMessage = fmt.Sprintf("Locksmith opened door %d.", door.ID)
+			if unlockedRoom {
+				roomLabel := "restricted room"
+				switch unlockedRoomID {
+				case gamemap.RoomPowerRoom:
+					roomLabel = "Power Room"
+				case gamemap.RoomAmmoRoom:
+					roomLabel = "Ammunition Room"
+				}
+				feedbackMessage = fmt.Sprintf("Locksmith unlocked %s access for prisoners.", roomLabel)
+			} else {
+				feedbackMessage = fmt.Sprintf("Locksmith opened door %d.", door.ID)
+			}
 		} else {
 			return denyAbilityUseLocked(session, player, changedPlayers, "target door is already unlocked and open")
 		}
@@ -2858,7 +2875,12 @@ func resolveAbilityTargetsForContextLocked(
 		}
 	case model.AbilityLocksmith:
 		if resolved.TargetDoorID == 0 {
-			resolved.TargetDoorID = firstReachableDoorForPlayerLocked(player, session.gameState.Map)
+			resolved.TargetDoorID = firstReachableDoorForPlayerLocked(
+				session,
+				player,
+				session.gameState.Map,
+				true,
+			)
 		}
 	}
 
@@ -2895,13 +2917,18 @@ func nearestPlayerTargetLocked(
 	return bestID
 }
 
-func firstReachableDoorForPlayerLocked(player model.PlayerState, mapState model.MapState) model.DoorID {
+func firstReachableDoorForPlayerLocked(
+	session *matchSession,
+	player model.PlayerState,
+	mapState model.MapState,
+	allowRestrictedPrisonerTarget bool,
+) model.DoorID {
 	bestDoorID := model.DoorID(0)
 	for _, door := range mapState.Doors {
 		if door.ID == 0 {
 			continue
 		}
-		if !canPlayerTargetDoorLocked(player, door, mapState) {
+		if !canPlayerTargetDoorLocked(session, player, door, mapState, allowRestrictedPrisonerTarget) {
 			continue
 		}
 		if bestDoorID == 0 || door.ID < bestDoorID {
@@ -2911,14 +2938,24 @@ func firstReachableDoorForPlayerLocked(player model.PlayerState, mapState model.
 	return bestDoorID
 }
 
-func canPlayerTargetDoorLocked(player model.PlayerState, door model.DoorState, mapState model.MapState) bool {
+func canPlayerTargetDoorLocked(
+	session *matchSession,
+	player model.PlayerState,
+	door model.DoorState,
+	mapState model.MapState,
+	allowRestrictedPrisonerTarget bool,
+) bool {
 	if player.CurrentRoomID != "" {
 		targetRoomID, adjacent := adjacentTargetRoomForDoor(player.CurrentRoomID, door)
 		if !adjacent {
 			return false
 		}
-		if targetRoomID != "" && !gamemap.CanEnterRoom(player, targetRoomID, mapState) {
-			return false
+		if targetRoomID != "" && !canPlayerEnterRoomLocked(session, player, targetRoomID, mapState) {
+			if !allowRestrictedPrisonerTarget ||
+				!isPrisonerRestrictedRoom(targetRoomID) ||
+				!gamemap.IsPrisonerPlayer(player) {
+				return false
+			}
 		}
 	}
 
@@ -2926,6 +2963,56 @@ func canPlayerTargetDoorLocked(player model.PlayerState, door model.DoorState, m
 		return false
 	}
 	return true
+}
+
+func canPlayerEnterRoomLocked(
+	session *matchSession,
+	player model.PlayerState,
+	targetRoomID model.RoomID,
+	mapState model.MapState,
+) bool {
+	decision := gamemap.EvaluateRoomEntry(player, targetRoomID, mapState)
+	if decision.Allowed {
+		return true
+	}
+
+	if session == nil || !gamemap.IsPrisonerPlayer(player) {
+		return false
+	}
+	if _, unlocked := session.prisonerUnlockedRooms[targetRoomID]; !unlocked {
+		return false
+	}
+	return decision.Verdict == gamemap.AccessDenyPowerRoomAuthorityOnly ||
+		decision.Verdict == gamemap.AccessDenyAmmoAuthorityOnly
+}
+
+func isPrisonerRestrictedRoom(roomID model.RoomID) bool {
+	return roomID == gamemap.RoomPowerRoom || roomID == gamemap.RoomAmmoRoom
+}
+
+func unlockRoomForPrisonersFromDoorLocked(session *matchSession, door model.DoorState) (model.RoomID, bool) {
+	if session == nil {
+		return "", false
+	}
+
+	var roomID model.RoomID
+	switch {
+	case door.RoomA == gamemap.RoomPowerRoom || door.RoomB == gamemap.RoomPowerRoom:
+		roomID = gamemap.RoomPowerRoom
+	case door.RoomA == gamemap.RoomAmmoRoom || door.RoomB == gamemap.RoomAmmoRoom:
+		roomID = gamemap.RoomAmmoRoom
+	default:
+		return "", false
+	}
+
+	if session.prisonerUnlockedRooms == nil {
+		session.prisonerUnlockedRooms = make(map[model.RoomID]struct{})
+	}
+	if _, exists := session.prisonerUnlockedRooms[roomID]; exists {
+		return roomID, false
+	}
+	session.prisonerUnlockedRooms[roomID] = struct{}{}
+	return roomID, true
 }
 
 func adjacentTargetRoomForDoor(currentRoomID model.RoomID, door model.DoorState) (model.RoomID, bool) {

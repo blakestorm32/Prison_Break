@@ -717,6 +717,152 @@ func TestAbilityLocksmithRequiresPowerAndTargetDoor(t *testing.T) {
 	}
 }
 
+func TestAbilityLocksmithUnlocksPowerRoomForAllPrisoners(t *testing.T) {
+	manager, _, factory := newTestManager(
+		Config{
+			MinPlayers:    3,
+			MaxPlayers:    6,
+			TickRateHz:    2,
+			DaySeconds:    20,
+			NightSeconds:  20,
+			MaxCycles:     6,
+			MatchIDPrefix: "ab-lock-room",
+		},
+		time.Date(2026, 2, 22, 12, 0, 0, 0, time.UTC),
+	)
+	t.Cleanup(manager.Close)
+
+	match := manager.CreateMatch()
+	if _, err := manager.JoinMatch(match.MatchID, "p1", "P1"); err != nil {
+		t.Fatalf("join p1 failed: %v", err)
+	}
+	if _, err := manager.JoinMatch(match.MatchID, "p2", "P2"); err != nil {
+		t.Fatalf("join p2 failed: %v", err)
+	}
+	if _, err := manager.JoinMatch(match.MatchID, "a1", "A1"); err != nil {
+		t.Fatalf("join a1 failed: %v", err)
+	}
+	if _, err := manager.StartMatch(match.MatchID); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+
+	setPlayerRoleAndFactionForTest(manager, match.MatchID, "p1", model.RoleGangMember, model.FactionPrisoner)
+	setPlayerRoleAndFactionForTest(manager, match.MatchID, "p2", model.RoleGangMember, model.FactionPrisoner)
+	setPlayerRoleAndFactionForTest(manager, match.MatchID, "a1", model.RoleDeputy, model.FactionAuthority)
+	setPlayerRoomForTest(manager, match.MatchID, "p1", gamemap.RoomCorridorMain)
+	setPlayerRoomForTest(manager, match.MatchID, "p2", gamemap.RoomCorridorMain)
+	setPlayerRoomForTest(manager, match.MatchID, "a1", gamemap.RoomCorridorMain)
+
+	ticker := factory.Last()
+	if ticker == nil {
+		t.Fatalf("expected ticker after start")
+	}
+
+	mustSubmitInteract(t, manager, match.MatchID, "p1", 1, model.InteractPayload{
+		TargetRoomID: gamemap.RoomPowerRoom,
+	})
+	mustSubmitInteract(t, manager, match.MatchID, "p2", 1, model.InteractPayload{
+		TargetRoomID: gamemap.RoomPowerRoom,
+	})
+	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 1, 0, time.UTC))
+	waitForTick(t, manager, match.MatchID, 1)
+
+	if room := playerRoomForTest(manager, match.MatchID, "p1"); room != gamemap.RoomCorridorMain {
+		t.Fatalf("expected locksmith prisoner blocked from power room before unlock, got %s", room)
+	}
+	if room := playerRoomForTest(manager, match.MatchID, "p2"); room != gamemap.RoomCorridorMain {
+		t.Fatalf("expected second prisoner blocked from power room before unlock, got %s", room)
+	}
+
+	mustSubmitUseAbilityWithDoorForTest(t, manager, match.MatchID, "p1", 2, model.AbilityLocksmith, 3)
+	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 2, 0, time.UTC))
+	waitForTick(t, manager, match.MatchID, 2)
+
+	mustSubmitInteract(t, manager, match.MatchID, "p1", 3, model.InteractPayload{
+		TargetRoomID: gamemap.RoomPowerRoom,
+	})
+	mustSubmitInteract(t, manager, match.MatchID, "p2", 2, model.InteractPayload{
+		TargetRoomID: gamemap.RoomPowerRoom,
+	})
+	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 3, 0, time.UTC))
+	waitForTick(t, manager, match.MatchID, 3)
+
+	if room := playerRoomForTest(manager, match.MatchID, "p1"); room != gamemap.RoomPowerRoom {
+		t.Fatalf("expected locksmith user allowed into power room after unlock, got %s", room)
+	}
+	if room := playerRoomForTest(manager, match.MatchID, "p2"); room != gamemap.RoomPowerRoom {
+		t.Fatalf("expected room unlock to apply to all prisoners, got %s", room)
+	}
+}
+
+func TestAbilityLocksmithAmmoUnlockStillRespectsPowerOffRule(t *testing.T) {
+	manager, _, factory := newTestManager(
+		Config{
+			MinPlayers:    1,
+			MaxPlayers:    4,
+			TickRateHz:    2,
+			DaySeconds:    20,
+			NightSeconds:  20,
+			MaxCycles:     6,
+			MatchIDPrefix: "ab-lock-ammo",
+		},
+		time.Date(2026, 2, 22, 12, 0, 0, 0, time.UTC),
+	)
+	t.Cleanup(manager.Close)
+
+	match := manager.CreateMatch()
+	if _, err := manager.JoinMatch(match.MatchID, "p1", "P1"); err != nil {
+		t.Fatalf("join failed: %v", err)
+	}
+	if _, err := manager.StartMatch(match.MatchID); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+
+	setPlayerRoleAndFactionForTest(manager, match.MatchID, "p1", model.RoleGangMember, model.FactionPrisoner)
+	setPlayerRoomForTest(manager, match.MatchID, "p1", gamemap.RoomCorridorMain)
+
+	ticker := factory.Last()
+	if ticker == nil {
+		t.Fatalf("expected ticker after start")
+	}
+
+	mustSubmitInteract(t, manager, match.MatchID, "p1", 1, model.InteractPayload{
+		TargetRoomID: gamemap.RoomAmmoRoom,
+	})
+	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 1, 0, time.UTC))
+	waitForTick(t, manager, match.MatchID, 1)
+
+	if room := playerRoomForTest(manager, match.MatchID, "p1"); room != gamemap.RoomCorridorMain {
+		t.Fatalf("expected prisoner blocked from ammo room before locksmith unlock, got %s", room)
+	}
+
+	mustSubmitUseAbilityWithDoorForTest(t, manager, match.MatchID, "p1", 2, model.AbilityLocksmith, 4)
+	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 2, 0, time.UTC))
+	waitForTick(t, manager, match.MatchID, 2)
+
+	mustSubmitInteract(t, manager, match.MatchID, "p1", 3, model.InteractPayload{
+		TargetRoomID: gamemap.RoomAmmoRoom,
+	})
+	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 3, 0, time.UTC))
+	waitForTick(t, manager, match.MatchID, 3)
+
+	if room := playerRoomForTest(manager, match.MatchID, "p1"); room != gamemap.RoomAmmoRoom {
+		t.Fatalf("expected prisoner allowed into ammo room after locksmith unlock, got %s", room)
+	}
+
+	setMapPowerForTest(manager, match.MatchID, false)
+	setPlayerRoomForTest(manager, match.MatchID, "p1", gamemap.RoomCorridorMain)
+	mustSubmitInteract(t, manager, match.MatchID, "p1", 4, model.InteractPayload{
+		TargetRoomID: gamemap.RoomAmmoRoom,
+	})
+	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 4, 0, time.UTC))
+	waitForTick(t, manager, match.MatchID, 4)
+
+	if room := playerRoomForTest(manager, match.MatchID, "p1"); room != gamemap.RoomCorridorMain {
+		t.Fatalf("expected ammo room to stay blocked while power is off, got %s", room)
+	}
+}
+
 func TestCardMorphineConsumesCardAndHealsWithCap(t *testing.T) {
 	manager, _, factory := newTestManager(
 		Config{

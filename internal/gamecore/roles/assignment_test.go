@@ -62,6 +62,107 @@ func TestAssignSupportsSixToTwelvePlayersWithCoreRoleGuarantees(t *testing.T) {
 	}
 }
 
+func TestRoleTemplateMatrixMatchesDesignDocPlayerCountConfigurations(t *testing.T) {
+	type templateSummary struct {
+		TotalPlayers    int
+		WardenCount     int
+		GoodAuthorities int
+		BadAuthorities  int
+		GangLeaders     int
+		GangMembers     int
+		Snitches        int
+		Neutrals        int
+	}
+
+	expected := map[int][]templateSummary{
+		6: {
+			{TotalPlayers: 6, WardenCount: 1, GoodAuthorities: 2, BadAuthorities: 0, GangLeaders: 1, GangMembers: 2, Snitches: 1, Neutrals: 0},
+			{TotalPlayers: 6, WardenCount: 1, GoodAuthorities: 2, BadAuthorities: 0, GangLeaders: 1, GangMembers: 1, Snitches: 0, Neutrals: 2},
+			{TotalPlayers: 6, WardenCount: 1, GoodAuthorities: 1, BadAuthorities: 1, GangLeaders: 1, GangMembers: 1, Snitches: 1, Neutrals: 1},
+		},
+		7: {
+			{TotalPlayers: 7, WardenCount: 1, GoodAuthorities: 3, BadAuthorities: 0, GangLeaders: 1, GangMembers: 2, Snitches: 0, Neutrals: 1},
+			{TotalPlayers: 7, WardenCount: 1, GoodAuthorities: 2, BadAuthorities: 1, GangLeaders: 1, GangMembers: 1, Snitches: 1, Neutrals: 1},
+		},
+		8: {
+			{TotalPlayers: 8, WardenCount: 1, GoodAuthorities: 3, BadAuthorities: 0, GangLeaders: 1, GangMembers: 3, Snitches: 0, Neutrals: 1},
+			{TotalPlayers: 8, WardenCount: 1, GoodAuthorities: 2, BadAuthorities: 1, GangLeaders: 1, GangMembers: 2, Snitches: 1, Neutrals: 1},
+		},
+		9: {
+			{TotalPlayers: 9, WardenCount: 1, GoodAuthorities: 3, BadAuthorities: 0, GangLeaders: 1, GangMembers: 3, Snitches: 0, Neutrals: 2},
+			{TotalPlayers: 9, WardenCount: 1, GoodAuthorities: 2, BadAuthorities: 1, GangLeaders: 1, GangMembers: 2, Snitches: 1, Neutrals: 2},
+		},
+		10: {
+			{TotalPlayers: 10, WardenCount: 1, GoodAuthorities: 3, BadAuthorities: 1, GangLeaders: 1, GangMembers: 3, Snitches: 1, Neutrals: 1},
+			{TotalPlayers: 10, WardenCount: 1, GoodAuthorities: 4, BadAuthorities: 0, GangLeaders: 1, GangMembers: 4, Snitches: 0, Neutrals: 1},
+			{TotalPlayers: 10, WardenCount: 1, GoodAuthorities: 2, BadAuthorities: 2, GangLeaders: 1, GangMembers: 1, Snitches: 2, Neutrals: 2},
+		},
+		11: {
+			{TotalPlayers: 11, WardenCount: 1, GoodAuthorities: 3, BadAuthorities: 1, GangLeaders: 1, GangMembers: 4, Snitches: 1, Neutrals: 1},
+			{TotalPlayers: 11, WardenCount: 1, GoodAuthorities: 4, BadAuthorities: 0, GangLeaders: 1, GangMembers: 5, Snitches: 0, Neutrals: 1},
+			{TotalPlayers: 11, WardenCount: 1, GoodAuthorities: 2, BadAuthorities: 2, GangLeaders: 1, GangMembers: 2, Snitches: 2, Neutrals: 2},
+		},
+		12: {
+			{TotalPlayers: 12, WardenCount: 1, GoodAuthorities: 3, BadAuthorities: 2, GangLeaders: 1, GangMembers: 3, Snitches: 2, Neutrals: 1},
+			{TotalPlayers: 12, WardenCount: 1, GoodAuthorities: 5, BadAuthorities: 0, GangLeaders: 1, GangMembers: 6, Snitches: 0, Neutrals: 0},
+			{TotalPlayers: 12, WardenCount: 1, GoodAuthorities: 3, BadAuthorities: 2, GangLeaders: 1, GangMembers: 2, Snitches: 2, Neutrals: 2},
+		},
+	}
+
+	for playerCount, expectedTemplates := range expected {
+		actualTemplates, exists := roleTemplatesByCount[playerCount]
+		if !exists {
+			t.Fatalf("missing templates for player count %d", playerCount)
+		}
+		if len(actualTemplates) != len(expectedTemplates) {
+			t.Fatalf(
+				"expected %d templates for player count %d, got %d",
+				len(expectedTemplates),
+				playerCount,
+				len(actualTemplates),
+			)
+		}
+
+		for idx, template := range actualTemplates {
+			summary := templateSummary{}
+			for _, profile := range template {
+				summary.TotalPlayers++
+				switch profile.Role {
+				case model.RoleWarden:
+					summary.WardenCount++
+				case model.RoleGangLeader:
+					summary.GangLeaders++
+				case model.RoleGangMember:
+					summary.GangMembers++
+				case model.RoleSnitch:
+					summary.Snitches++
+				case model.RoleNeutralPrisoner:
+					summary.Neutrals++
+				}
+
+				if profile.Faction == model.FactionAuthority {
+					if profile.Alignment == model.AlignmentGood {
+						summary.GoodAuthorities++
+					}
+					if profile.Alignment == model.AlignmentEvil {
+						summary.BadAuthorities++
+					}
+				}
+			}
+
+			if !reflect.DeepEqual(summary, expectedTemplates[idx]) {
+				t.Fatalf(
+					"unexpected template summary for player_count=%d template=%d: got %+v want %+v",
+					playerCount,
+					idx,
+					summary,
+					expectedTemplates[idx],
+				)
+			}
+		}
+	}
+}
+
 func TestAssignFallbackForSmallMatches(t *testing.T) {
 	assignments, err := Assign([]model.PlayerID{"p1", "p2", "p3"}, "small")
 	if err != nil {
