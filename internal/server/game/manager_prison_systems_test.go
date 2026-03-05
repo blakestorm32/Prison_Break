@@ -174,6 +174,61 @@ func TestAlarmAbilitySpawnsGuardsShootsRestrictedPrisonersAndAutoStops(t *testin
 	}
 }
 
+func TestAlarmGuardLethalHitConsumesLifeAndRespawnsPrisoner(t *testing.T) {
+	manager, _, factory := newTestManager(
+		Config{
+			MinPlayers:    2,
+			MaxPlayers:    4,
+			TickRateHz:    2,
+			DaySeconds:    5,
+			NightSeconds:  5,
+			MaxCycles:     6,
+			MatchIDPrefix: "alarm-life",
+		},
+		time.Date(2026, 2, 22, 12, 0, 0, 0, time.UTC),
+	)
+	t.Cleanup(manager.Close)
+
+	match := manager.CreateMatch()
+	if _, err := manager.JoinMatch(match.MatchID, "warden", "Warden"); err != nil {
+		t.Fatalf("join warden failed: %v", err)
+	}
+	if _, err := manager.JoinMatch(match.MatchID, "pris", "Prisoner"); err != nil {
+		t.Fatalf("join prisoner failed: %v", err)
+	}
+	if _, err := manager.StartMatch(match.MatchID); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+
+	setPlayerRoleAndFactionForTest(manager, match.MatchID, "warden", model.RoleWarden, model.FactionAuthority)
+	setPlayerRoleAndFactionForTest(manager, match.MatchID, "pris", model.RoleGangMember, model.FactionPrisoner)
+	setPlayerRoomForTest(manager, match.MatchID, "warden", gamemap.RoomCorridorMain)
+	setPlayerRoomForTest(manager, match.MatchID, "pris", gamemap.RoomPowerRoom)
+	setPlayerHeartsForTest(manager, match.MatchID, "pris", 2)
+
+	ticker := factory.Last()
+	if ticker == nil {
+		t.Fatalf("expected ticker after start")
+	}
+
+	mustSubmitUseAbility(t, manager, match.MatchID, "warden", 1, model.AbilityAlarm)
+	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 1, 0, time.UTC))
+	waitForTick(t, manager, match.MatchID, 1)
+
+	if hearts := playerHeartsForTest(manager, match.MatchID, "pris"); hearts != 6 {
+		t.Fatalf("expected lethal guard hit to consume one life and respawn with full hearts, got %d", hearts)
+	}
+	if lives := playerLivesForTest(manager, match.MatchID, "pris"); lives != 2 {
+		t.Fatalf("expected one life consumed by lethal guard shot (3->2), got %d", lives)
+	}
+	if !playerAliveForTest(manager, match.MatchID, "pris") {
+		t.Fatalf("expected prisoner to remain alive after non-final life loss")
+	}
+	if room := playerRoomForTest(manager, match.MatchID, "pris"); room != gamemap.RoomCellBlockA {
+		t.Fatalf("expected prisoner respawned to cell block after life loss, got %s", room)
+	}
+}
+
 func TestAlarmAbilityOncePerDayAndFixedDurationExpiry(t *testing.T) {
 	manager, _, factory := newTestManager(
 		Config{

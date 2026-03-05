@@ -37,6 +37,9 @@ func TestStartMatchAppliesRoleLoadouts(t *testing.T) {
 	if bullets := playerBulletsForTest(manager, match.MatchID, "p1"); bullets != 3 {
 		t.Fatalf("expected fallback single-player warden bullets=3, got %d", bullets)
 	}
+	if lives := playerLivesForTest(manager, match.MatchID, "p1"); lives != 3 {
+		t.Fatalf("expected fallback single-player warden to start with 3 lives, got %d", lives)
+	}
 }
 
 func TestFireWeaponPistolDamagesAndAppliesUnjustAuthorityPenalty(t *testing.T) {
@@ -374,6 +377,7 @@ func TestGoldenBulletDamageAndConsumption(t *testing.T) {
 	setPlayerHeartsForTest(manager, match.MatchID, "b", 6)
 	setPlayerBulletsForTest(manager, match.MatchID, "a", 3)
 	setPlayerInventoryForTest(manager, match.MatchID, "a", []model.ItemStack{
+		{Item: model.ItemPistol, Quantity: 1},
 		{Item: model.ItemGoldenBullet, Quantity: 1},
 	})
 
@@ -400,6 +404,229 @@ func TestGoldenBulletDamageAndConsumption(t *testing.T) {
 	inventory := playerInventoryForTest(manager, match.MatchID, "a")
 	if items.HasItem(model.PlayerState{Inventory: inventory}, model.ItemGoldenBullet, 1) {
 		t.Fatalf("expected golden bullet inventory to be consumed")
+	}
+}
+
+func TestLethalDamageConsumesLivesAndRespawnsUntilFinalElimination(t *testing.T) {
+	manager, _, factory := newTestManager(
+		Config{
+			MinPlayers:    2,
+			MaxPlayers:    4,
+			TickRateHz:    30,
+			MatchIDPrefix: "cmb-life",
+		},
+		time.Date(2026, 2, 22, 12, 0, 0, 0, time.UTC),
+	)
+	t.Cleanup(manager.Close)
+
+	match := manager.CreateMatch()
+	if _, err := manager.JoinMatch(match.MatchID, "a", "Shooter"); err != nil {
+		t.Fatalf("join a failed: %v", err)
+	}
+	if _, err := manager.JoinMatch(match.MatchID, "b", "Target"); err != nil {
+		t.Fatalf("join b failed: %v", err)
+	}
+	if _, err := manager.StartMatch(match.MatchID); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+
+	setPlayerRoleAndFactionForTest(manager, match.MatchID, "a", model.RoleDeputy, model.FactionAuthority)
+	setPlayerRoleAndFactionForTest(manager, match.MatchID, "b", model.RoleGangMember, model.FactionPrisoner)
+	setPlayerBulletsForTest(manager, match.MatchID, "a", 3)
+	setMapPowerForTest(manager, match.MatchID, false) // Avoid unjust-shot penalties interfering with repeated shots.
+
+	ticker := factory.Last()
+	if ticker == nil {
+		t.Fatalf("expected ticker after start")
+	}
+
+	for shot := uint64(1); shot <= 3; shot++ {
+		setPlayerRoomForTest(manager, match.MatchID, "a", gamemap.RoomCorridorMain)
+		setPlayerRoomForTest(manager, match.MatchID, "b", gamemap.RoomCorridorMain)
+		setPlayerPositionForTest(manager, match.MatchID, "a", model.Vector2{X: 4, Y: 10})
+		setPlayerPositionForTest(manager, match.MatchID, "b", model.Vector2{X: 5, Y: 10})
+		setPlayerHeartsForTest(manager, match.MatchID, "b", 2)
+
+		mustSubmitFireWeapon(t, manager, match.MatchID, "a", shot, model.FireWeaponPayload{
+			Weapon:  model.ItemPistol,
+			TargetX: 5,
+			TargetY: 10,
+		})
+		ticker.Tick(time.Date(2026, 2, 22, 12, 0, int(shot), 0, time.UTC))
+		waitForTick(t, manager, match.MatchID, shot)
+	}
+
+	if lives := playerLivesForTest(manager, match.MatchID, "b"); lives != 0 {
+		t.Fatalf("expected all 3 lives consumed after three lethal hits, got %d", lives)
+	}
+	if alive := playerAliveForTest(manager, match.MatchID, "b"); alive {
+		t.Fatalf("expected target permanently eliminated after final life")
+	}
+	if hearts := playerHeartsForTest(manager, match.MatchID, "b"); hearts != 0 {
+		t.Fatalf("expected final elimination to keep hearts at 0, got %d", hearts)
+	}
+}
+
+func TestEquipItemCommandUpdatesEquippedWeapon(t *testing.T) {
+	manager, _, factory := newTestManager(
+		Config{
+			MinPlayers:    1,
+			MaxPlayers:    4,
+			TickRateHz:    10,
+			MatchIDPrefix: "cmb-equip",
+		},
+		time.Date(2026, 2, 22, 12, 0, 0, 0, time.UTC),
+	)
+	t.Cleanup(manager.Close)
+
+	match := manager.CreateMatch()
+	if _, err := manager.JoinMatch(match.MatchID, "p1", "P1"); err != nil {
+		t.Fatalf("join failed: %v", err)
+	}
+	if _, err := manager.StartMatch(match.MatchID); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+
+	setPlayerRoleAndFactionForTest(manager, match.MatchID, "p1", model.RoleDeputy, model.FactionAuthority)
+	setPlayerInventoryForTest(manager, match.MatchID, "p1", []model.ItemStack{
+		{Item: model.ItemBaton, Quantity: 1},
+		{Item: model.ItemPistol, Quantity: 1},
+		{Item: model.ItemBullet, Quantity: 3},
+	})
+	setPlayerEquippedItemForTest(manager, match.MatchID, "p1", model.ItemPistol)
+
+	raw, err := json.Marshal(model.EquipItemPayload{Item: model.ItemBaton})
+	if err != nil {
+		t.Fatalf("marshal equip payload failed: %v", err)
+	}
+	if _, err := manager.SubmitInput(match.MatchID, model.InputCommand{
+		PlayerID:  "p1",
+		ClientSeq: 1,
+		Type:      model.CmdEquipItem,
+		Payload:   raw,
+	}); err != nil {
+		t.Fatalf("submit equip command failed: %v", err)
+	}
+
+	ticker := factory.Last()
+	if ticker == nil {
+		t.Fatalf("expected ticker after start")
+	}
+	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 1, 0, time.UTC))
+	waitForTick(t, manager, match.MatchID, 1)
+
+	if equipped := playerEquippedItemForTest(manager, match.MatchID, "p1"); equipped != model.ItemBaton {
+		t.Fatalf("expected equip command to set baton in hand, got %s", equipped)
+	}
+}
+
+func TestAuthorityAmmoRoomRestockLocksMovementAndRefillsAfterDuration(t *testing.T) {
+	manager, _, factory := newTestManager(
+		Config{
+			MinPlayers:    1,
+			MaxPlayers:    4,
+			TickRateHz:    2,
+			MatchIDPrefix: "cmb-restock",
+		},
+		time.Date(2026, 2, 22, 12, 0, 0, 0, time.UTC),
+	)
+	t.Cleanup(manager.Close)
+
+	match := manager.CreateMatch()
+	if _, err := manager.JoinMatch(match.MatchID, "p1", "P1"); err != nil {
+		t.Fatalf("join failed: %v", err)
+	}
+	if _, err := manager.StartMatch(match.MatchID); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+
+	setPlayerRoleAndFactionForTest(manager, match.MatchID, "p1", model.RoleDeputy, model.FactionAuthority)
+	setPlayerRoomForTest(manager, match.MatchID, "p1", gamemap.RoomAmmoRoom)
+	setPlayerBulletsForTest(manager, match.MatchID, "p1", 1)
+	setPlayerPositionForTest(manager, match.MatchID, "p1", model.Vector2{X: 5, Y: 5})
+
+	ticker := factory.Last()
+	if ticker == nil {
+		t.Fatalf("expected ticker after start")
+	}
+
+	if _, err := manager.SubmitInput(match.MatchID, model.InputCommand{
+		PlayerID:  "p1",
+		ClientSeq: 1,
+		Type:      model.CmdReload,
+	}); err != nil {
+		t.Fatalf("submit reload failed: %v", err)
+	}
+	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 1, 0, time.UTC))
+	waitForTick(t, manager, match.MatchID, 1)
+
+	if bullets := playerBulletsForTest(manager, match.MatchID, "p1"); bullets != 1 {
+		t.Fatalf("expected restock to be delayed; bullets should remain 1 during countdown, got %d", bullets)
+	}
+
+	mustSubmitMoveIntent(t, manager, match.MatchID, "p1", 2, 1, 0, false)
+	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 2, 0, time.UTC))
+	waitForTick(t, manager, match.MatchID, 2)
+
+	if pos := playerPositionForTest(manager, match.MatchID, "p1"); pos != (model.Vector2{X: 5, Y: 5}) {
+		t.Fatalf("expected movement blocked while restocking, got %+v", pos)
+	}
+
+	for tick := uint64(3); tick <= 21; tick++ {
+		ticker.Tick(time.Date(2026, 2, 22, 12, 0, int(tick), 0, time.UTC))
+		waitForTick(t, manager, match.MatchID, tick)
+	}
+
+	if bullets := playerBulletsForTest(manager, match.MatchID, "p1"); bullets != authorityAmmoMax {
+		t.Fatalf("expected restock completion to refill ammo to %d, got %d", authorityAmmoMax, bullets)
+	}
+}
+
+func TestAuthoritySidearmRestoredOnNewDayWhenMissing(t *testing.T) {
+	manager, _, factory := newTestManager(
+		Config{
+			MinPlayers:    1,
+			MaxPlayers:    4,
+			TickRateHz:    2,
+			DaySeconds:    5,
+			NightSeconds:  5,
+			MaxCycles:     6,
+			MatchIDPrefix: "cmb-sidearm",
+		},
+		time.Date(2026, 2, 22, 12, 0, 0, 0, time.UTC),
+	)
+	t.Cleanup(manager.Close)
+
+	match := manager.CreateMatch()
+	if _, err := manager.JoinMatch(match.MatchID, "p1", "P1"); err != nil {
+		t.Fatalf("join failed: %v", err)
+	}
+	if _, err := manager.StartMatch(match.MatchID); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+
+	setPlayerRoleAndFactionForTest(manager, match.MatchID, "p1", model.RoleWarden, model.FactionAuthority)
+	setPlayerInventoryForTest(manager, match.MatchID, "p1", []model.ItemStack{
+		{Item: model.ItemBaton, Quantity: 1},
+		{Item: model.ItemBullet, Quantity: 3},
+	})
+	setPlayerEquippedItemForTest(manager, match.MatchID, "p1", model.ItemBaton)
+
+	setPhaseEndTickForTest(manager, match.MatchID, 1)
+	ticker := factory.Last()
+	if ticker == nil {
+		t.Fatalf("expected ticker after start")
+	}
+	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 1, 0, time.UTC))
+	waitForTick(t, manager, match.MatchID, 1)
+
+	setPhaseEndTickForTest(manager, match.MatchID, 2)
+	ticker.Tick(time.Date(2026, 2, 22, 12, 0, 2, 0, time.UTC))
+	waitForTick(t, manager, match.MatchID, 2)
+
+	inventory := playerInventoryForTest(manager, match.MatchID, "p1")
+	if !items.HasItem(model.PlayerState{Inventory: inventory}, model.ItemPistol, 1) {
+		t.Fatalf("expected missing authority pistol to be restored at day start, got %+v", inventory)
 	}
 }
 
@@ -527,6 +754,19 @@ func playerStunnedUntilForTest(manager *Manager, matchID model.MatchID, playerID
 	for _, player := range session.gameState.Players {
 		if player.ID == playerID {
 			return player.StunnedUntilTick
+		}
+	}
+	return 0
+}
+
+func playerLivesForTest(manager *Manager, matchID model.MatchID, playerID model.PlayerID) uint8 {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+
+	session := manager.matches[matchID]
+	for _, player := range session.gameState.Players {
+		if player.ID == playerID {
+			return player.LivesRemaining
 		}
 	}
 	return 0

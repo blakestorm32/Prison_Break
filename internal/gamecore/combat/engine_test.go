@@ -38,6 +38,11 @@ func TestApplyRoleLoadoutsByRole(t *testing.T) {
 	if got := state.Players[2].Bullets; got != 0 {
 		t.Fatalf("expected prisoner bullets 0, got %d", got)
 	}
+	for _, player := range state.Players {
+		if player.LivesRemaining != DefaultPlayerLives {
+			t.Fatalf("expected player %s to start with %d lives, got %d", player.ID, DefaultPlayerLives, player.LivesRemaining)
+		}
+	}
 }
 
 func TestSelectTargetDeterministicByAimDistanceThenID(t *testing.T) {

@@ -93,7 +93,8 @@ func BuildHUDLinesWithOptions(state model.GameState, localPlayerID model.PlayerI
 	lines = append(lines, fmt.Sprintf("You %s (%s)  Faction %s  Role %s", local.Name, local.ID, local.Faction, local.Role))
 	lines = append(lines, "Objective "+objectiveSummary(local))
 	lines = append(lines, "ObjectiveProgress "+objectiveProgressSummary(state, local))
-	lines = append(lines, fmt.Sprintf("Health %s (+%s temp)  Ammo %d  Room %s", formatHearts(local.HeartsHalf), formatHearts(local.TempHeartsHalf), local.Bullets, roomOrUnknown(local.CurrentRoomID)))
+	lines = append(lines, fmt.Sprintf("Health %s (+%s temp)  Ammo %d  Lives %d  Room %s", formatHearts(local.HeartsHalf), formatHearts(local.TempHeartsHalf), local.Bullets, local.LivesRemaining, roomOrUnknown(local.CurrentRoomID)))
+	lines = append(lines, fmt.Sprintf("Hand %s  Inventory %d/%d", equippedItemLabel(local), len(local.Inventory), inventorySlotLimit(local)))
 	lines = append(lines, "Effects "+formatEffects(local))
 	lines = append(lines, "Cooldowns "+formatCooldowns(state.TickID, local))
 	if local.LastActionFeedback.Kind != "" && local.LastActionFeedback.TickID > 0 {
@@ -147,10 +148,24 @@ func BuildCompactHUDLines(state model.GameState, localPlayerID model.PlayerID, o
 		return lines
 	}
 
-	lines = append(lines, fmt.Sprintf("Faction %s | Role %s", local.Faction, local.Role))
+	lines = append(lines, fmt.Sprintf("Faction %s | Role %s | Hand %s", local.Faction, local.Role, equippedItemLabel(local)))
 	lines = append(lines, phaseLabel)
 	lines = append(lines, pingLabel)
 	return lines
+}
+
+func equippedItemLabel(player model.PlayerState) string {
+	if player.EquippedItem == "" {
+		return "none"
+	}
+	return string(player.EquippedItem)
+}
+
+func inventorySlotLimit(player model.PlayerState) int {
+	if player.InventorySlots == 0 {
+		return len(player.Inventory)
+	}
+	return int(player.InventorySlots)
 }
 
 func formatCooldowns(currentTick uint64, player model.PlayerState) string {

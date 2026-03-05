@@ -55,9 +55,12 @@ type PlayerState struct {
 	Alignment AlignmentType `json:"alignment"`
 	Role      RoleType      `json:"role"`
 
-	HeartsHalf     uint8 `json:"hearts_half"`
-	TempHeartsHalf uint8 `json:"temp_hearts_half,omitempty"`
-	Bullets        uint8 `json:"bullets"`
+	HeartsHalf     uint8    `json:"hearts_half"`
+	TempHeartsHalf uint8    `json:"temp_hearts_half,omitempty"`
+	Bullets        uint8    `json:"bullets"`
+	LivesRemaining uint8    `json:"lives_remaining"`
+	EquippedItem   ItemType `json:"equipped_item,omitempty"`
+	InventorySlots uint8    `json:"inventory_slots,omitempty"`
 
 	Position Vector2 `json:"position"`
 	Velocity Vector2 `json:"velocity"`
@@ -71,10 +74,10 @@ type PlayerState struct {
 	StunnedUntilTick  uint64 `json:"stunned_until_tick,omitempty"`
 	SolitaryUntilTick uint64 `json:"solitary_until_tick,omitempty"`
 
-	Inventory []ItemStack   `json:"inventory,omitempty"`
-	Cards     []CardType    `json:"cards,omitempty"`
-	NightCardChoices []CardType `json:"night_card_choices,omitempty"`
-	Effects   []EffectState `json:"effects,omitempty"`
+	Inventory        []ItemStack   `json:"inventory,omitempty"`
+	Cards            []CardType    `json:"cards,omitempty"`
+	NightCardChoices []CardType    `json:"night_card_choices,omitempty"`
+	Effects          []EffectState `json:"effects,omitempty"`
 
 	LastEscapeAttempt  EscapeAttemptFeedback `json:"last_escape_attempt,omitempty"`
 	LastActionFeedback ActionFeedback        `json:"last_action_feedback,omitempty"`
@@ -94,10 +97,10 @@ type DoorState struct {
 }
 
 type CellState struct {
-	ID                CellID     `json:"id"`
-	OwnerPlayerID     PlayerID   `json:"owner_player_id,omitempty"`
-	DoorID            DoorID     `json:"door_id,omitempty"`
-	OccupantPlayerIDs []PlayerID `json:"occupant_player_ids,omitempty"`
+	ID                CellID      `json:"id"`
+	OwnerPlayerID     PlayerID    `json:"owner_player_id,omitempty"`
+	DoorID            DoorID      `json:"door_id,omitempty"`
+	OccupantPlayerIDs []PlayerID  `json:"occupant_player_ids,omitempty"`
 	Stash             []ItemStack `json:"stash,omitempty"`
 }
 

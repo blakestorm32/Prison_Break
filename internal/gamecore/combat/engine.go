@@ -9,7 +9,9 @@ import (
 )
 
 const (
-	WeaponBaton model.ItemType = "baton"
+	DefaultPlayerLives uint8 = 3
+
+	WeaponBaton model.ItemType = model.ItemBaton
 
 	ShivDamageHalf         uint8 = 1
 	FirearmDamageHalf      uint8 = 2
@@ -43,6 +45,7 @@ func ApplyRoleLoadouts(state *model.GameState) {
 		loadout := loadoutForRole(player.Role)
 		player.HeartsHalf = loadout.HeartsHalf
 		player.Bullets = loadout.Bullets
+		player.LivesRemaining = DefaultPlayerLives
 		player.TempHeartsHalf = 0
 		player.Alive = loadout.HeartsHalf > 0
 		player.StunnedUntilTick = 0
@@ -93,18 +96,23 @@ func CanUseWeapon(player model.PlayerState, weapon model.ItemType) bool {
 		return false
 	}
 
+	legacyAuthorityLoadout := gamemap.IsAuthorityPlayer(player) && player.InventorySlots == 0
+
 	switch weapon {
 	case WeaponBaton:
-		return gamemap.IsAuthorityPlayer(player)
+		if legacyAuthorityLoadout {
+			return true
+		}
+		return items.HasItem(player, model.ItemBaton, 1)
 	case model.ItemShiv:
 		return items.HasItem(player, model.ItemShiv, 1)
 	case model.ItemPistol:
-		if gamemap.IsAuthorityPlayer(player) {
+		if legacyAuthorityLoadout {
 			return true
 		}
 		return items.HasItem(player, model.ItemPistol, 1)
 	case model.ItemHuntingRifle:
-		if gamemap.IsAuthorityPlayer(player) {
+		if legacyAuthorityLoadout {
 			return true
 		}
 		return items.HasItem(player, model.ItemHuntingRifle, 1)

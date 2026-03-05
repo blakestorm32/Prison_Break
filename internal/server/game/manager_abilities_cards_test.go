@@ -1431,6 +1431,8 @@ func TestCardScrapBundleGrantsMaterialsAndPreservesOnCapacityFailure(t *testing.
 		t.Fatalf("start failed: %v", err)
 	}
 
+	setPlayerRoleAndFactionForTest(manager, match.MatchID, "p1", model.RoleGangMember, model.FactionPrisoner)
+	setPlayerInventoryForTest(manager, match.MatchID, "p1", nil)
 	setPlayerCardsForTest(manager, match.MatchID, "p1", []model.CardType{model.CardScrapBundle})
 	ticker := factory.Last()
 	if ticker == nil {
@@ -1451,9 +1453,6 @@ func TestCardScrapBundleGrantsMaterialsAndPreservesOnCapacityFailure(t *testing.
 		{Item: model.ItemShiv, Quantity: 1},
 		{Item: model.ItemBullet, Quantity: 1},
 		{Item: model.ItemPistol, Quantity: 1},
-		{Item: model.ItemHuntingRifle, Quantity: 1},
-		{Item: model.ItemLockPick, Quantity: 1},
-		{Item: model.ItemWireCutters, Quantity: 1},
 	})
 	setPlayerCardsForTest(manager, match.MatchID, "p1", []model.CardType{model.CardScrapBundle})
 	mustSubmitUseCardForTest(t, manager, match.MatchID, "p1", 2, model.CardScrapBundle)

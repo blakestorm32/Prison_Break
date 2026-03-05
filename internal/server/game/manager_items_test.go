@@ -148,9 +148,6 @@ func TestPickupDroppedItemRequiresRoomAndCapacity(t *testing.T) {
 		{Item: model.ItemBadge, Quantity: 1},
 		{Item: model.ItemBullet, Quantity: 1},
 		{Item: model.ItemDoorStop, Quantity: 1},
-		{Item: model.ItemKeys, Quantity: 1},
-		{Item: model.ItemMetalSlab, Quantity: 1},
-		{Item: model.ItemWood, Quantity: 1},
 	})
 
 	mustSubmitInteract(t, manager, match.MatchID, "p2", 2, model.InteractPayload{
@@ -166,9 +163,6 @@ func TestPickupDroppedItemRequiresRoomAndCapacity(t *testing.T) {
 	setPlayerInventoryForTest(manager, match.MatchID, "p2", []model.ItemStack{
 		{Item: model.ItemBadge, Quantity: 1},
 		{Item: model.ItemBullet, Quantity: 1},
-		{Item: model.ItemDoorStop, Quantity: 1},
-		{Item: model.ItemKeys, Quantity: 1},
-		{Item: model.ItemMetalSlab, Quantity: 1},
 	})
 	mustSubmitInteract(t, manager, match.MatchID, "p2", 3, model.InteractPayload{
 		TargetEntityID: entityID,

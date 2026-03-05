@@ -28,6 +28,7 @@ type Recipe struct {
 }
 
 var knownItems = map[model.ItemType]struct{}{
+	model.ItemBaton:        {},
 	model.ItemWood:         {},
 	model.ItemMetalSlab:    {},
 	model.ItemShiv:         {},
@@ -109,7 +110,7 @@ func IsContraband(item model.ItemType) bool {
 }
 
 func InventoryStackLimit(player model.PlayerState) uint8 {
-	return uint8(stackLimitForInventory(player.Inventory))
+	return uint8(stackLimitForPlayer(player, normalizeInventory(player.Inventory)))
 }
 
 func HasItem(player model.PlayerState, item model.ItemType, amount uint8) bool {
@@ -133,7 +134,13 @@ func AddItem(player *model.PlayerState, item model.ItemType, amount uint8) bool 
 		return false
 	}
 
-	nextInventory, ok := addToInventory(normalizeInventory(player.Inventory), item, amount)
+	normalizedInventory := normalizeInventory(player.Inventory)
+	nextInventory, ok := addToInventory(
+		normalizedInventory,
+		item,
+		amount,
+		baseStackLimitForPlayer(*player),
+	)
 	if !ok {
 		return false
 	}
@@ -149,6 +156,9 @@ func RemoveItem(player *model.PlayerState, item model.ItemType, amount uint8) bo
 
 	nextInventory, ok := removeFromInventory(normalizeInventory(player.Inventory), item, amount)
 	if !ok {
+		return false
+	}
+	if item == model.ItemSatchel && len(nextInventory) > stackLimitForPlayer(*player, nextInventory) {
 		return false
 	}
 
@@ -172,7 +182,12 @@ func TransferItem(from *model.PlayerState, to *model.PlayerState, item model.Ite
 		return false
 	}
 
-	destinationAfter, ok := addToInventory(destinationInventory, item, amount)
+	destinationAfter, ok := addToInventory(
+		destinationInventory,
+		item,
+		amount,
+		baseStackLimitForPlayer(*to),
+	)
 	if !ok {
 		return false
 	}
@@ -219,7 +234,12 @@ func Craft(player *model.PlayerState, output model.ItemType) bool {
 	}
 
 	var ok bool
-	nextInventory, ok = addToInventory(nextInventory, recipe.Output, recipe.OutputQuantity)
+	nextInventory, ok = addToInventory(
+		nextInventory,
+		recipe.Output,
+		recipe.OutputQuantity,
+		baseStackLimitForPlayer(*player),
+	)
 	if !ok {
 		return false
 	}
@@ -298,7 +318,12 @@ func ParseDroppedItem(entity model.EntityState) (model.ItemType, uint8, bool) {
 	return item, quantity, true
 }
 
-func addToInventory(inventory []model.ItemStack, item model.ItemType, amount uint8) ([]model.ItemStack, bool) {
+func addToInventory(
+	inventory []model.ItemStack,
+	item model.ItemType,
+	amount uint8,
+	baseStackLimit int,
+) ([]model.ItemStack, bool) {
 	if amount == 0 || !IsKnownItem(item) {
 		return nil, false
 	}
@@ -319,7 +344,10 @@ func addToInventory(inventory []model.ItemStack, item model.ItemType, amount uin
 	}
 
 	next = normalizeInventory(next)
-	if len(next) > stackLimitForInventory(next) {
+	if baseStackLimit <= 0 {
+		baseStackLimit = BaseInventoryStackLimit
+	}
+	if len(next) > stackLimitForBase(next, baseStackLimit) {
 		return nil, false
 	}
 	return next, true
@@ -345,9 +373,6 @@ func removeFromInventory(inventory []model.ItemStack, item model.ItemType, amoun
 	}
 
 	next = normalizeInventory(next)
-	if len(next) > stackLimitForInventory(next) {
-		return nil, false
-	}
 	return next, true
 }
 
@@ -393,7 +418,18 @@ func findStackIndex(inventory []model.ItemStack, item model.ItemType) int {
 	return -1
 }
 
-func stackLimitForInventory(inventory []model.ItemStack) int {
+func stackLimitForPlayer(player model.PlayerState, inventory []model.ItemStack) int {
+	return stackLimitForBase(inventory, baseStackLimitForPlayer(player))
+}
+
+func baseStackLimitForPlayer(player model.PlayerState) int {
+	if player.InventorySlots > 0 {
+		return int(player.InventorySlots)
+	}
+	return BaseInventoryStackLimit
+}
+
+func stackLimitForBase(inventory []model.ItemStack, baseLimit int) int {
 	satchelCount := 0
 	for _, stack := range inventory {
 		if stack.Item != model.ItemSatchel {
@@ -402,5 +438,5 @@ func stackLimitForInventory(inventory []model.ItemStack) int {
 		satchelCount += int(stack.Quantity)
 	}
 
-	return BaseInventoryStackLimit + (satchelCount * SatchelBonusStacks)
+	return baseLimit + (satchelCount * SatchelBonusStacks)
 }

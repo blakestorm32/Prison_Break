@@ -354,6 +354,75 @@ func TestControllerMobileLayoutAccessorReturnsConfiguredLayout(t *testing.T) {
 	}
 }
 
+func TestControllerEquipSlotsEmitEquipItemCommandOnEdge(t *testing.T) {
+	controller := NewController(ControllerConfig{
+		PlayerID: "p1",
+	})
+
+	local := &model.PlayerState{
+		ID: "p1",
+		Inventory: []model.ItemStack{
+			{Item: model.ItemBaton, Quantity: 1},
+			{Item: model.ItemPistol, Quantity: 1},
+			{Item: model.ItemShiv, Quantity: 1},
+		},
+	}
+
+	first := controller.BuildCommands(InputSnapshot{
+		EquipSlot2Pressed: true,
+	}, 7, local)
+	if len(first) != 2 {
+		t.Fatalf("expected equip command plus aim update on first slot press, got %+v", first)
+	}
+	if first[0].Type != model.CmdEquipItem {
+		t.Fatalf("expected equip command type, got %+v", first)
+	}
+
+	var payload model.EquipItemPayload
+	mustDecodePayload(t, first[0].Payload, &payload)
+	if payload.Item != model.ItemPistol {
+		t.Fatalf("expected slot 2 to equip pistol, got %+v", payload)
+	}
+
+	second := controller.BuildCommands(InputSnapshot{
+		EquipSlot2Pressed: true,
+	}, 8, local)
+	if len(second) == 0 {
+		t.Fatalf("expected continued aim command stream, got no commands")
+	}
+	if commandByType(second, model.CmdEquipItem) {
+		t.Fatalf("expected held equip key to avoid duplicate equip commands, got %+v", second)
+	}
+}
+
+func TestControllerFireUsesEquippedWeaponWhenPresent(t *testing.T) {
+	controller := NewController(ControllerConfig{
+		PlayerID: "p1",
+	})
+
+	local := &model.PlayerState{
+		ID:           "p1",
+		Position:     model.Vector2{X: 4, Y: 4},
+		EquippedItem: model.ItemShiv,
+	}
+
+	commands := controller.BuildCommands(InputSnapshot{
+		HasAim:      true,
+		AimWorldX:   5,
+		AimWorldY:   4,
+		FirePressed: true,
+	}, 11, local)
+	if len(commands) != 2 {
+		t.Fatalf("expected aim+fire commands, got %+v", commands)
+	}
+
+	var fire model.FireWeaponPayload
+	mustDecodePayload(t, commands[1].Payload, &fire)
+	if fire.Weapon != model.ItemShiv {
+		t.Fatalf("expected fire payload to use equipped shiv, got %+v", fire)
+	}
+}
+
 func TestControllerBuildUseCardCommandProducesValidPayloadAndSequence(t *testing.T) {
 	controller := NewController(ControllerConfig{
 		PlayerID: "p1",
@@ -478,4 +547,13 @@ func mustDecodePayload(t *testing.T, payload json.RawMessage, out any) {
 	if err := json.Unmarshal(payload, out); err != nil {
 		t.Fatalf("decode payload failed: %v payload=%s", err, string(payload))
 	}
+}
+
+func commandByType(commands []model.InputCommand, commandType model.InputCommandType) bool {
+	for _, command := range commands {
+		if command.Type == commandType {
+			return true
+		}
+	}
+	return false
 }

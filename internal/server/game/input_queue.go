@@ -145,6 +145,7 @@ func isSupportedInputCommand(commandType model.InputCommandType) bool {
 		model.CmdUseItem,
 		model.CmdBlackMarketBuy,
 		model.CmdFireWeapon,
+		model.CmdEquipItem,
 		model.CmdReload,
 		model.CmdDropItem,
 		model.CmdCraftItem:
@@ -327,6 +328,18 @@ func validateInputPayload(commandType model.InputCommandType, payload json.RawMe
 			return ErrInvalidInputPayload
 		}
 		if !combat.IsSupportedWeapon(msg.Weapon) {
+			return ErrInvalidInputPayload
+		}
+		return nil
+	case model.CmdEquipItem:
+		var msg model.EquipItemPayload
+		if err := decode(&msg); err != nil {
+			return err
+		}
+		if strings.TrimSpace(string(msg.Item)) == "" {
+			return ErrInvalidInputPayload
+		}
+		if !combat.IsSupportedWeapon(msg.Item) {
 			return ErrInvalidInputPayload
 		}
 		return nil

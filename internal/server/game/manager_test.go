@@ -11,6 +11,7 @@ import (
 
 	"prison-break/internal/engine/physics"
 	"prison-break/internal/gamecore/abilities"
+	"prison-break/internal/gamecore/items"
 	gamemap "prison-break/internal/gamecore/map"
 	"prison-break/internal/shared/model"
 )
@@ -1690,6 +1691,18 @@ func setPlayerRoleAndFactionForTest(
 		session.gameState.Players[idx].Role = role
 		session.gameState.Players[idx].Faction = faction
 		session.gameState.Players[idx].AssignedAbility = ""
+		session.gameState.Players[idx].InventorySlots = playerInventorySlotCount
+		session.gameState.Players[idx].Inventory = nil
+		session.gameState.Players[idx].EquippedItem = ""
+		if faction == model.FactionAuthority {
+			session.gameState.Players[idx].Bullets = authorityAmmoMax
+			_ = items.AddItem(&session.gameState.Players[idx], model.ItemBaton, 1)
+			_ = items.AddItem(&session.gameState.Players[idx], model.ItemPistol, 1)
+			_ = items.AddItem(&session.gameState.Players[idx], model.ItemBullet, authorityAmmoMax)
+			session.gameState.Players[idx].EquippedItem = model.ItemPistol
+		} else {
+			session.gameState.Players[idx].Bullets = 0
+		}
 		return
 	}
 }
@@ -1797,6 +1810,42 @@ func setPlayerPositionForTest(
 		session.gameState.Players[idx].Position = position
 		return
 	}
+}
+
+func setPlayerEquippedItemForTest(
+	manager *Manager,
+	matchID model.MatchID,
+	playerID model.PlayerID,
+	item model.ItemType,
+) {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+
+	session := manager.matches[matchID]
+	for idx := range session.gameState.Players {
+		if session.gameState.Players[idx].ID != playerID {
+			continue
+		}
+		session.gameState.Players[idx].EquippedItem = item
+		return
+	}
+}
+
+func playerEquippedItemForTest(
+	manager *Manager,
+	matchID model.MatchID,
+	playerID model.PlayerID,
+) model.ItemType {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+
+	session := manager.matches[matchID]
+	for _, player := range session.gameState.Players {
+		if player.ID == playerID {
+			return player.EquippedItem
+		}
+	}
+	return ""
 }
 
 func setPlayerStunnedUntilForTest(

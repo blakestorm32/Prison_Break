@@ -27,6 +27,10 @@ type InputSnapshot struct {
 	MoveRight bool
 	Sprint    bool
 
+	EquipSlot1Pressed bool
+	EquipSlot2Pressed bool
+	EquipSlot3Pressed bool
+
 	InteractPressed    bool
 	AbilityPressed     bool
 	AbilityInfoPressed bool
@@ -150,12 +154,15 @@ type Controller struct {
 
 	mobile MobileLayout
 
-	prevFirePressed     bool
-	prevInteractPressed bool
-	prevAbilityPressed  bool
-	prevReloadPressed   bool
-	lastMoveTargetTick  uint64
-	lastAimTargetTick   uint64
+	prevFirePressed       bool
+	prevInteractPressed   bool
+	prevAbilityPressed    bool
+	prevReloadPressed     bool
+	prevEquipSlot1Pressed bool
+	prevEquipSlot2Pressed bool
+	prevEquipSlot3Pressed bool
+	lastMoveTargetTick    uint64
+	lastAimTargetTick     uint64
 }
 
 func NewController(config ControllerConfig) *Controller {
@@ -234,6 +241,21 @@ func (c *Controller) BuildUseItemCommand(
 	return c.newCommand(model.CmdUseItem, rawPayload, targetTick), true
 }
 
+func (c *Controller) BuildEquipItemCommand(
+	payload model.EquipItemPayload,
+	targetTick uint64,
+) (model.InputCommand, bool) {
+	if c == nil || c.playerID == "" || !combat.IsSupportedWeapon(payload.Item) {
+		return model.InputCommand{}, false
+	}
+
+	rawPayload, err := json.Marshal(payload)
+	if err != nil {
+		return model.InputCommand{}, false
+	}
+	return c.newCommand(model.CmdEquipItem, rawPayload, targetTick), true
+}
+
 func (c *Controller) BuildBlackMarketBuyCommand(
 	payload model.BlackMarketPurchasePayload,
 	targetTick uint64,
@@ -297,8 +319,33 @@ func (c *Controller) BuildCommands(
 	interactPressed := snapshot.InteractPressed || c.touchInsideButton(snapshot.Touches, c.mobile.InteractButton)
 	abilityPressed := snapshot.AbilityPressed || c.touchInsideButton(snapshot.Touches, c.mobile.AbilityButton)
 	reloadPressed := snapshot.ReloadPressed || c.touchInsideButton(snapshot.Touches, c.mobile.ReloadButton)
+	equipSlot1Edge := edgePressed(c.prevEquipSlot1Pressed, snapshot.EquipSlot1Pressed)
+	equipSlot2Edge := edgePressed(c.prevEquipSlot2Pressed, snapshot.EquipSlot2Pressed)
+	equipSlot3Edge := edgePressed(c.prevEquipSlot3Pressed, snapshot.EquipSlot3Pressed)
 
-	commands := make([]model.InputCommand, 0, 5)
+	commands := make([]model.InputCommand, 0, 8)
+
+	if localPlayer != nil {
+		equipSlot := 0
+		switch {
+		case equipSlot1Edge:
+			equipSlot = 1
+		case equipSlot2Edge:
+			equipSlot = 2
+		case equipSlot3Edge:
+			equipSlot = 3
+		}
+		if equipSlot > 0 {
+			if weapon, ok := equippableWeaponForSlot(*localPlayer, equipSlot); ok {
+				payload, err := json.Marshal(model.EquipItemPayload{
+					Item: weapon,
+				})
+				if err == nil {
+					commands = append(commands, c.newCommand(model.CmdEquipItem, payload, targetTick))
+				}
+			}
+		}
+	}
 
 	if (moveX != 0 || moveY != 0) && targetTick != 0 && targetTick != c.lastMoveTargetTick {
 		payload, err := json.Marshal(model.MovementInputPayload{
@@ -325,8 +372,15 @@ func (c *Controller) BuildCommands(
 	}
 
 	if edgePressed(c.prevFirePressed, firePressed) {
+		weapon := c.fireWeapon
+		if localPlayer != nil && combat.IsSupportedWeapon(localPlayer.EquippedItem) {
+			weapon = localPlayer.EquippedItem
+		}
+		if !combat.IsSupportedWeapon(weapon) {
+			weapon = model.ItemPistol
+		}
 		payload, err := json.Marshal(model.FireWeaponPayload{
-			Weapon:  c.fireWeapon,
+			Weapon:  weapon,
 			TargetX: aimWorldX,
 			TargetY: aimWorldY,
 		})
@@ -362,6 +416,9 @@ func (c *Controller) BuildCommands(
 	c.prevInteractPressed = interactPressed
 	c.prevAbilityPressed = abilityPressed
 	c.prevReloadPressed = reloadPressed
+	c.prevEquipSlot1Pressed = snapshot.EquipSlot1Pressed
+	c.prevEquipSlot2Pressed = snapshot.EquipSlot2Pressed
+	c.prevEquipSlot3Pressed = snapshot.EquipSlot3Pressed
 
 	return commands
 }
@@ -492,4 +549,32 @@ func resolveTriggeredAbility(local model.PlayerState) model.AbilityType {
 	}
 
 	return ""
+}
+
+func equippableWeaponForSlot(local model.PlayerState, slot int) (model.ItemType, bool) {
+	if slot <= 0 {
+		return "", false
+	}
+
+	weapons := make([]model.ItemType, 0, 3)
+	seen := make(map[model.ItemType]struct{}, 4)
+	for _, stack := range local.Inventory {
+		if stack.Item == "" || stack.Quantity == 0 {
+			continue
+		}
+		if !combat.IsSupportedWeapon(stack.Item) {
+			continue
+		}
+		if _, exists := seen[stack.Item]; exists {
+			continue
+		}
+		seen[stack.Item] = struct{}{}
+		weapons = append(weapons, stack.Item)
+	}
+
+	index := slot - 1
+	if index < 0 || index >= len(weapons) {
+		return "", false
+	}
+	return weapons[index], true
 }

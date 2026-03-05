@@ -66,6 +66,7 @@ const (
 type ItemType string
 
 const (
+	ItemBaton        ItemType = "baton"
 	ItemWood         ItemType = "wood"
 	ItemMetalSlab    ItemType = "metal_slab"
 	ItemShiv         ItemType = "shiv"
@@ -126,6 +127,7 @@ const (
 	CmdUseItem        InputCommandType = "use_item"
 	CmdBlackMarketBuy InputCommandType = "black_market_buy"
 	CmdFireWeapon     InputCommandType = "fire_weapon"
+	CmdEquipItem      InputCommandType = "equip_item"
 	CmdReload         InputCommandType = "reload"
 	CmdDropItem       InputCommandType = "drop_item"
 	CmdCraftItem      InputCommandType = "craft_item"
@@ -141,14 +143,14 @@ const (
 type EffectType string
 
 const (
-	EffectStunned    EffectType = "stunned"
-	EffectSolitary   EffectType = "solitary"
-	EffectSpeedBoost EffectType = "speed_boost"
-	EffectArmorPlate EffectType = "armor_plate"
-	EffectTracked    EffectType = "tracked"
-	EffectDisguised  EffectType = "disguised"
-	EffectChameleon  EffectType = "chameleon"
-	EffectCameraView EffectType = "camera_view"
+	EffectStunned     EffectType = "stunned"
+	EffectSolitary    EffectType = "solitary"
+	EffectSpeedBoost  EffectType = "speed_boost"
+	EffectArmorPlate  EffectType = "armor_plate"
+	EffectTracked     EffectType = "tracked"
+	EffectDisguised   EffectType = "disguised"
+	EffectChameleon   EffectType = "chameleon"
+	EffectCameraView  EffectType = "camera_view"
 	EffectTrackerView EffectType = "tracker_view"
 )
 

@@ -3,6 +3,7 @@ package render
 import (
 	"fmt"
 	"image/color"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -291,6 +292,7 @@ func (s *Shell) Draw(screen *ebiten.Image) {
 	s.drawDoors(screen, state)
 	s.drawEntities(screen, state)
 	s.drawPlayers(screen, state)
+	s.drawEquippedWeaponAimLine(screen, state)
 	s.drawHUD(screen, state)
 	s.drawSpectatorOverlay(screen, state)
 	s.drawActionPanels(screen, state)
@@ -568,6 +570,56 @@ func (s *Shell) drawPlayers(screen *ebiten.Image, state model.GameState) {
 	}
 }
 
+func (s *Shell) drawEquippedWeaponAimLine(screen *ebiten.Image, state model.GameState) {
+	if s == nil || s.localPlayerID == "" {
+		return
+	}
+
+	local, found := playerByID(state.Players, s.localPlayerID)
+	if !found || !local.Alive {
+		return
+	}
+
+	weapon := effectiveEquippedWeapon(local)
+	if !combat.IsFirearm(weapon) {
+		return
+	}
+
+	dx := local.Facing.X
+	dy := local.Facing.Y
+	length := math.Hypot(float64(dx), float64(dy))
+	if length <= 0 {
+		dx = 1
+		dy = 0
+		length = 1
+	}
+	unitX := float32(float64(dx) / length)
+	unitY := float32(float64(dy) / length)
+
+	rangeTiles := combat.WeaponRangeTiles(weapon)
+	if rangeTiles <= 0 {
+		return
+	}
+
+	start := local.Position
+	end := model.Vector2{
+		X: start.X + (unitX * rangeTiles),
+		Y: start.Y + (unitY * rangeTiles),
+	}
+	startX, startY := s.camera.WorldToScreen(start)
+	endX, endY := s.camera.WorldToScreen(end)
+	vector.StrokeLine(
+		screen,
+		float32(startX),
+		float32(startY),
+		float32(endX),
+		float32(endY),
+		2,
+		color.RGBA{R: 170, G: 174, B: 181, A: 126},
+		false,
+	)
+}
+
 func (s *Shell) drawTrackerFootsteps(
 	screen *ebiten.Image,
 	state model.GameState,
@@ -653,6 +705,9 @@ func (s *Shell) drawEntities(screen *ebiten.Image, state model.GameState) {
 			continue
 		}
 		size := 0.45
+		if entity.Kind == model.EntityKindProjectile {
+			size = 0.16
+		}
 		x, y, w, h := s.camera.TileRectToScreen(float64(entity.Position.X)-(size/2), float64(entity.Position.Y)-(size/2), size, size)
 		vector.DrawFilledRect(screen, float32(x), float32(y), float32(w), float32(h), entityFillColor(entity.Kind), false)
 	}
@@ -986,8 +1041,18 @@ func (s *Shell) computeActionButtonStates(state model.GameState) (canFire bool, 
 		return false, false, false, false, abilityLabel
 	}
 
-	canFire = local.Bullets > 0
-	canReload = local.Bullets < 255
+	weapon := effectiveEquippedWeapon(local)
+	switch weapon {
+	case model.ItemPistol, model.ItemHuntingRifle:
+		canFire = combat.CanUseWeapon(local, weapon) && local.Bullets > 0
+	case model.ItemBaton, model.ItemShiv:
+		canFire = combat.CanUseWeapon(local, weapon)
+	default:
+		canFire = false
+	}
+	canReload = gamemap.IsAuthorityPlayer(local) &&
+		local.CurrentRoomID == gamemap.RoomAmmoRoom &&
+		local.Bullets < 3
 	canInteract = s.hasNearbyInteractable(local, state)
 	assigned := local.AssignedAbility
 	if assigned == "" {
@@ -1001,6 +1066,25 @@ func (s *Shell) computeActionButtonStates(state model.GameState) (canFire bool, 
 		canAbility = s.canUseAssignedAbility(local, state, assigned)
 	}
 	return canFire, canInteract, canReload, canAbility, abilityLabel
+}
+
+func effectiveEquippedWeapon(local model.PlayerState) model.ItemType {
+	if combat.IsSupportedWeapon(local.EquippedItem) {
+		return local.EquippedItem
+	}
+
+	priority := []model.ItemType{
+		model.ItemPistol,
+		model.ItemHuntingRifle,
+		model.ItemBaton,
+		model.ItemShiv,
+	}
+	for _, weapon := range priority {
+		if combat.CanUseWeapon(local, weapon) {
+			return weapon
+		}
+	}
+	return ""
 }
 
 func (s *Shell) canUseAssignedAbility(local model.PlayerState, state model.GameState, ability model.AbilityType) bool {
@@ -1249,7 +1333,7 @@ func (s *Shell) drawPauseMenu(screen *ebiten.Image) {
 		"",
 		"Controls",
 		"Move: WASD/Arrows | Sprint: Shift",
-		"Aim/Fire: Mouse + Space/LMB",
+		"Aim/Fire: Mouse + Space/LMB | Equip: 1/2/3",
 		"Interact: E/F | Ability: V | Ability Info: I | Reload: R",
 		"Panels: Tab/C | Escape: X | Stash: H in cell block",
 		"Night cards: popup at night (Arrows + Enter)",
@@ -1414,6 +1498,10 @@ func (s *Shell) captureInputSnapshot() input.InputSnapshot {
 		MoveLeft:  ebiten.IsKeyPressed(ebiten.KeyA) || ebiten.IsKeyPressed(ebiten.KeyArrowLeft),
 		MoveRight: ebiten.IsKeyPressed(ebiten.KeyD) || ebiten.IsKeyPressed(ebiten.KeyArrowRight),
 		Sprint:    ebiten.IsKeyPressed(ebiten.KeyShift) || ebiten.IsKeyPressed(ebiten.KeyShiftLeft) || ebiten.IsKeyPressed(ebiten.KeyShiftRight),
+
+		EquipSlot1Pressed: ebiten.IsKeyPressed(ebiten.KeyDigit1) || ebiten.IsKeyPressed(ebiten.KeyKP1),
+		EquipSlot2Pressed: ebiten.IsKeyPressed(ebiten.KeyDigit2) || ebiten.IsKeyPressed(ebiten.KeyKP2),
+		EquipSlot3Pressed: ebiten.IsKeyPressed(ebiten.KeyDigit3) || ebiten.IsKeyPressed(ebiten.KeyKP3),
 
 		InteractPressed:    ebiten.IsKeyPressed(ebiten.KeyE) || ebiten.IsKeyPressed(ebiten.KeyF),
 		AbilityPressed:     ebiten.IsKeyPressed(ebiten.KeyV) || ebiten.IsKeyPressed(ebiten.KeyG),

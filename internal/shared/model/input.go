@@ -25,16 +25,16 @@ type AimInputPayload struct {
 }
 
 type InteractPayload struct {
-	TargetEntityID EntityID        `json:"target_entity_id,omitempty"`
-	TargetDoorID   DoorID          `json:"target_door_id,omitempty"`
-	TargetCellID   CellID          `json:"target_cell_id,omitempty"`
-	TargetRoomID   RoomID          `json:"target_room_id,omitempty"`
-	EscapeRoute    EscapeRouteType `json:"escape_route,omitempty"`
-	MarketRoomID   RoomID          `json:"market_room_id,omitempty"`
-	NightCardChoice CardType       `json:"night_card_choice,omitempty"`
-	StashAction     string         `json:"stash_action,omitempty"`
-	StashItem       ItemType       `json:"stash_item,omitempty"`
-	StashAmount     uint8          `json:"stash_amount,omitempty"`
+	TargetEntityID  EntityID        `json:"target_entity_id,omitempty"`
+	TargetDoorID    DoorID          `json:"target_door_id,omitempty"`
+	TargetCellID    CellID          `json:"target_cell_id,omitempty"`
+	TargetRoomID    RoomID          `json:"target_room_id,omitempty"`
+	EscapeRoute     EscapeRouteType `json:"escape_route,omitempty"`
+	MarketRoomID    RoomID          `json:"market_room_id,omitempty"`
+	NightCardChoice CardType        `json:"night_card_choice,omitempty"`
+	StashAction     string          `json:"stash_action,omitempty"`
+	StashItem       ItemType        `json:"stash_item,omitempty"`
+	StashAmount     uint8           `json:"stash_amount,omitempty"`
 }
 
 type AbilityUsePayload struct {
@@ -72,6 +72,10 @@ type FireWeaponPayload struct {
 	TargetX        float32  `json:"target_x"`
 	TargetY        float32  `json:"target_y"`
 	UseGoldenRound bool     `json:"use_golden_round,omitempty"`
+}
+
+type EquipItemPayload struct {
+	Item ItemType `json:"item"`
 }
 
 type CraftItemPayload struct {

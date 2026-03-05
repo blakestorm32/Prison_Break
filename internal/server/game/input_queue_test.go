@@ -138,6 +138,51 @@ func TestSubmitInputRejectsUnknownItemsForItemCommands(t *testing.T) {
 	if !errors.Is(err, ErrInvalidInputPayload) {
 		t.Fatalf("expected ErrInvalidInputPayload for unknown black-market item, got %v", err)
 	}
+
+	_, err = manager.SubmitInput(match.MatchID, model.InputCommand{
+		PlayerID:  "p1",
+		ClientSeq: 5,
+		Type:      model.CmdEquipItem,
+		Payload: mustRawJSON(t, model.EquipItemPayload{
+			Item: model.ItemWood,
+		}),
+	})
+	if !errors.Is(err, ErrInvalidInputPayload) {
+		t.Fatalf("expected ErrInvalidInputPayload for non-weapon equip item, got %v", err)
+	}
+}
+
+func TestSubmitInputEquipItemAcceptsKnownWeapon(t *testing.T) {
+	manager, _, _ := newTestManager(
+		Config{
+			MinPlayers:    1,
+			MaxPlayers:    4,
+			TickRateHz:    30,
+			MatchIDPrefix: "q",
+		},
+		time.Date(2026, 2, 22, 12, 0, 0, 0, time.UTC),
+	)
+	t.Cleanup(manager.Close)
+
+	match := manager.CreateMatch()
+	if _, err := manager.JoinMatch(match.MatchID, "p1", "P1"); err != nil {
+		t.Fatalf("join failed: %v", err)
+	}
+	if _, err := manager.StartMatch(match.MatchID); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+
+	_, err := manager.SubmitInput(match.MatchID, model.InputCommand{
+		PlayerID:  "p1",
+		ClientSeq: 1,
+		Type:      model.CmdEquipItem,
+		Payload: mustRawJSON(t, model.EquipItemPayload{
+			Item: model.ItemBaton,
+		}),
+	})
+	if err != nil {
+		t.Fatalf("expected known equip weapon payload to validate, got %v", err)
+	}
 }
 
 func TestSubmitInputAcceptsKnownBlackMarketPurchasePayload(t *testing.T) {

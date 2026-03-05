@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -120,6 +121,8 @@ type matchSession struct {
 	npcTaskByPlayer             map[model.PlayerID]npcTaskState
 	chameleonPendingUntil       map[model.PlayerID]uint64
 	lastMoveIntentTick          map[model.PlayerID]uint64
+	ammoRestockUntil            map[model.PlayerID]uint64
+	projectileExpireTick        map[model.EntityID]uint64
 	replayEntries               []ReplayEntry
 
 	gameState       model.GameState
@@ -161,6 +164,10 @@ type npcTaskType string
 const (
 	npcTaskVisitRoom npcTaskType = "visit_room"
 	npcTaskHoldItem  npcTaskType = "hold_item"
+
+	playerInventorySlotCount uint8 = 3
+	authorityAmmoMax         uint8 = 3
+	authorityRestockSeconds        = 10
 )
 
 type npcTaskState struct {
@@ -490,12 +497,15 @@ func (m *Manager) StartMatch(matchID model.MatchID) (MatchSnapshot, error) {
 	session.prisonerUnlockedRooms = make(map[model.RoomID]struct{})
 	session.lockSnapDoorRestores = make(map[model.DoorID]lockSnapDoorRestoreState)
 	session.npcPrisonerBribeState = make(map[model.EntityID]npcPrisonerBribeState)
+	session.ammoRestockUntil = make(map[model.PlayerID]uint64)
+	session.projectileExpireTick = make(map[model.EntityID]uint64)
 	session.replayEntries = make([]ReplayEntry, 0, 256)
 	syncGameStatePlayersLocked(session)
 	_ = roles.ApplyAssignments(&session.gameState, session.matchID)
 	assignRandomAbilitiesLocked(session)
 	assignCellsLocked(session)
 	combat.ApplyRoleLoadouts(&session.gameState)
+	applyInventoryLoadoutsLocked(&session.gameState)
 	spawnNPCPrisonersLocked(session)
 
 	session.scheduledInputs = make(map[uint64][]model.InputCommand)
@@ -852,6 +862,9 @@ func (m *Manager) runMatchLoop(matchID model.MatchID, loopCtx context.Context, t
 						for _, playerID := range clearNightCardChoicesLocked(session) {
 							phasePlayerChanges[playerID] = struct{}{}
 						}
+						for _, playerID := range restoreAuthoritySidearmsForNewDayLocked(session) {
+							phasePlayerChanges[playerID] = struct{}{}
+						}
 					}
 					continue
 				}
@@ -995,13 +1008,14 @@ func syncGameStatePlayersLocked(session *matchSession) {
 		state, exists := existing[playerID]
 		if !exists {
 			state = model.PlayerState{
-				ID:         playerID,
-				Name:       playerSession.Name,
-				Connected:  true,
-				Alive:      true,
-				HeartsHalf: 6,
-				Position:   model.Vector2{},
-				Velocity:   model.Vector2{},
+				ID:             playerID,
+				Name:           playerSession.Name,
+				Connected:      true,
+				Alive:          true,
+				HeartsHalf:     6,
+				LivesRemaining: combat.DefaultPlayerLives,
+				Position:       model.Vector2{},
+				Velocity:       model.Vector2{},
 				Facing: model.Vector2{
 					X: 1,
 					Y: 0,
@@ -1132,6 +1146,126 @@ func assignCellsLocked(session *matchSession) {
 	}
 }
 
+func applyInventoryLoadoutsLocked(state *model.GameState) {
+	if state == nil {
+		return
+	}
+
+	for index := range state.Players {
+		player := &state.Players[index]
+		player.InventorySlots = playerInventorySlotCount
+
+		if gamemap.IsAuthorityPlayer(*player) {
+			player.Inventory = nil
+			_ = items.AddItem(player, model.ItemBaton, 1)
+			_ = items.AddItem(player, model.ItemPistol, 1)
+
+			if player.Bullets == 0 {
+				player.Bullets = authorityAmmoMax
+			}
+			if player.Bullets > authorityAmmoMax {
+				player.Bullets = authorityAmmoMax
+			}
+			_ = syncAuthorityBulletStackLocked(player)
+			player.EquippedItem = model.ItemPistol
+			continue
+		}
+
+		normalizeInventoryToPlayerSlotsLocked(player)
+		ensureEquippedItemForPlayerLocked(player)
+	}
+}
+
+func normalizeInventoryToPlayerSlotsLocked(player *model.PlayerState) {
+	if player == nil {
+		return
+	}
+
+	canonical := append([]model.ItemStack(nil), player.Inventory...)
+	sort.Slice(canonical, func(i int, j int) bool {
+		return canonical[i].Item < canonical[j].Item
+	})
+
+	rebuilt := model.PlayerState{
+		InventorySlots: player.InventorySlots,
+	}
+	for _, stack := range canonical {
+		if stack.Item == "" || stack.Quantity == 0 || !items.IsKnownItem(stack.Item) {
+			continue
+		}
+		_ = items.AddItem(&rebuilt, stack.Item, stack.Quantity)
+	}
+	player.Inventory = rebuilt.Inventory
+}
+
+func ensureEquippedItemForPlayerLocked(player *model.PlayerState) bool {
+	if player == nil {
+		return false
+	}
+
+	if player.EquippedItem != "" && combat.CanUseWeapon(*player, player.EquippedItem) {
+		return false
+	}
+
+	next := preferredEquippedWeapon(*player)
+	if player.EquippedItem == next {
+		return false
+	}
+	player.EquippedItem = next
+	return true
+}
+
+func preferredEquippedWeapon(player model.PlayerState) model.ItemType {
+	priority := []model.ItemType{
+		model.ItemPistol,
+		model.ItemHuntingRifle,
+		model.ItemBaton,
+		model.ItemShiv,
+	}
+	for _, weapon := range priority {
+		if combat.CanUseWeapon(player, weapon) {
+			return weapon
+		}
+	}
+	return ""
+}
+
+func syncAuthorityBulletStackLocked(player *model.PlayerState) bool {
+	if player == nil || !gamemap.IsAuthorityPlayer(*player) {
+		return false
+	}
+
+	changed := false
+	if player.Bullets > authorityAmmoMax {
+		player.Bullets = authorityAmmoMax
+		changed = true
+	}
+
+	current := inventoryItemQuantity(player.Inventory, model.ItemBullet)
+	if current > 0 {
+		if items.RemoveItem(player, model.ItemBullet, current) {
+			changed = true
+		}
+	}
+	if player.Bullets > 0 {
+		if items.AddItem(player, model.ItemBullet, player.Bullets) {
+			changed = true
+		}
+	}
+
+	return changed
+}
+
+func inventoryItemQuantity(inventory []model.ItemStack, item model.ItemType) uint8 {
+	for _, stack := range inventory {
+		if stack.Item != item {
+			continue
+		}
+		return stack.Quantity
+	}
+	return 0
+}
+
 func spawnPositionInRoom(roomID model.RoomID, index int) model.Vector2 {
 	if index < 0 {
 		index = 0
@@ -1223,6 +1357,61 @@ func spawnPositionAtRoomFraction(room gamemap.Room, fractionX float32, fractionY
 	return model.Vector2{X: float32(x), Y: float32(y)}
 }
 
+func consumeLifeAndRespawnIfAvailableLocked(player *model.PlayerState) (lifeLost bool, permanentlyEliminated bool) {
+	if player == nil {
+		return false, false
+	}
+
+	if player.LivesRemaining == 0 {
+		player.LivesRemaining = combat.DefaultPlayerLives
+	}
+	if player.LivesRemaining > 0 {
+		player.LivesRemaining--
+	}
+	if player.LivesRemaining == 0 {
+		return true, true
+	}
+
+	player.Alive = true
+	player.HeartsHalf = combat.MaxHeartsHalfForRole(player.Role)
+	player.TempHeartsHalf = 0
+	player.StunnedUntilTick = 0
+	player.SolitaryUntilTick = 0
+	player.LockedInCell = 0
+	player.Velocity = model.Vector2{}
+	player.Effects = nil
+
+	roomID, position := respawnLocationForPlayer(*player)
+	player.CurrentRoomID = roomID
+	player.Position = position
+
+	return true, false
+}
+
+func respawnLocationForPlayer(player model.PlayerState) (model.RoomID, model.Vector2) {
+	switch player.Role {
+	case model.RoleWarden:
+		return gamemap.RoomWardenHQ, spawnPositionInRoom(gamemap.RoomWardenHQ, 0)
+	case model.RoleDeputy:
+		return gamemap.RoomAmmoRoom, spawnPositionInRoom(gamemap.RoomAmmoRoom, deterministicRespawnIndex(player.ID, 6))
+	default:
+		spawnIndex := 0
+		if player.AssignedCell > 0 {
+			spawnIndex = int(player.AssignedCell - 1)
+		}
+		return gamemap.RoomCellBlockA, spawnPositionForPlayerIndex(spawnIndex)
+	}
+}
+
+func deterministicRespawnIndex(playerID model.PlayerID, modulo int) int {
+	if modulo <= 1 || playerID == "" {
+		return 0
+	}
+	hasher := fnv.New64a()
+	_, _ = hasher.Write([]byte(playerID))
+	return int(hasher.Sum64() % uint64(modulo))
+}
+
 func applyInputsToGameStateLocked(session *matchSession, commands []model.InputCommand) tickMutations {
 	playerIndex := make(map[model.PlayerID]int, len(session.gameState.Players))
 	for idx := range session.gameState.Players {
@@ -1234,6 +1423,8 @@ func applyInputsToGameStateLocked(session *matchSession, commands []model.InputC
 	changedCells := make(map[model.CellID]struct{})
 	changedEntities := make(map[model.EntityID]struct{})
 	removedEntities := make(map[model.EntityID]struct{})
+	resolveAmmoRestockCompletionsLocked(session, changed)
+	expireProjectileEntitiesLocked(session, changedEntities, removedEntities)
 	occupiedTiles := physics.BuildOccupiedTiles(session.gameState.Players)
 	for _, command := range commands {
 		idx, exists := playerIndex[command.PlayerID]
@@ -1255,6 +1446,13 @@ func applyInputsToGameStateLocked(session *matchSession, commands []model.InputC
 		case model.CmdMoveIntent:
 			var payload model.MovementInputPayload
 			if err := json.Unmarshal(command.Payload, &payload); err != nil {
+				continue
+			}
+			if isAmmoRestockInProgressLocked(session, player.ID) {
+				if player.Velocity != (model.Vector2{}) {
+					player.Velocity = model.Vector2{}
+					changed[command.PlayerID] = struct{}{}
+				}
 				continue
 			}
 			if payload.MoveX != 0 || payload.MoveY != 0 {
@@ -1312,8 +1510,16 @@ func applyInputsToGameStateLocked(session *matchSession, commands []model.InputC
 			changed[command.PlayerID] = struct{}{}
 
 		case model.CmdReload:
-			if player.Bullets < 255 {
-				player.Bullets++
+			if applyReloadCommandLocked(session, player) {
+				changed[command.PlayerID] = struct{}{}
+			}
+
+		case model.CmdEquipItem:
+			var payload model.EquipItemPayload
+			if err := json.Unmarshal(command.Payload, &payload); err != nil {
+				continue
+			}
+			if applyEquipItemCommandLocked(session, player, payload) {
 				changed[command.PlayerID] = struct{}{}
 			}
 
@@ -1329,6 +1535,7 @@ func applyInputsToGameStateLocked(session *matchSession, commands []model.InputC
 				playerIndex,
 				occupiedTiles,
 				changed,
+				changedEntities,
 			) {
 				// Mutations are tracked by helper.
 			}
@@ -1388,6 +1595,14 @@ func applyInputsToGameStateLocked(session *matchSession, commands []model.InputC
 				payload.Item,
 				amount,
 			) {
+				source := &session.gameState.Players[playerIndex[command.PlayerID]]
+				target := &session.gameState.Players[playerIndex[payload.TargetPlayerID]]
+				if ensureEquippedItemForPlayerLocked(source) {
+					changed[command.PlayerID] = struct{}{}
+				}
+				if ensureEquippedItemForPlayerLocked(target) {
+					changed[payload.TargetPlayerID] = struct{}{}
+				}
 				changed[command.PlayerID] = struct{}{}
 				changed[payload.TargetPlayerID] = struct{}{}
 			}
@@ -1426,6 +1641,9 @@ func applyInputsToGameStateLocked(session *matchSession, commands []model.InputC
 
 			droppedEntity := newDroppedItemEntityLocked(session, *player, payload.Item, amount)
 			session.gameState.Entities = append(session.gameState.Entities, droppedEntity)
+			if ensureEquippedItemForPlayerLocked(player) {
+				changed[command.PlayerID] = struct{}{}
+			}
 			changed[command.PlayerID] = struct{}{}
 			changedEntities[droppedEntity.ID] = struct{}{}
 
@@ -1435,6 +1653,9 @@ func applyInputsToGameStateLocked(session *matchSession, commands []model.InputC
 				continue
 			}
 			if items.Craft(player, payload.Item) {
+				if ensureEquippedItemForPlayerLocked(player) {
+					changed[command.PlayerID] = struct{}{}
+				}
 				changed[command.PlayerID] = struct{}{}
 			}
 
@@ -1649,6 +1870,9 @@ func applyInteractCommandLocked(
 			}
 		} else if tryPickupDroppedEntityLocked(session, player, payload.TargetEntityID, changedEntities, removedEntities) {
 			changed = true
+			if ensureEquippedItemForPlayerLocked(player) {
+				changed = true
+			}
 			if applyActionFeedbackLocked(
 				player,
 				model.ActionFeedbackKindSystem,
@@ -1922,6 +2146,7 @@ func applyCellStashInteractLocked(
 			return false, "Cell stash is full.", model.ActionFeedbackLevelWarning, 0
 		}
 		cell.Stash = stashCarrier.Inventory
+		_ = ensureEquippedItemForPlayerLocked(livePlayer)
 		return true, fmt.Sprintf("Stashed %s x%d.", payload.StashItem, amount), model.ActionFeedbackLevelSuccess, cell.ID
 
 	case "withdraw":
@@ -1934,6 +2159,7 @@ func applyCellStashInteractLocked(
 			return false, "Inventory full; cannot withdraw.", model.ActionFeedbackLevelWarning, 0
 		}
 		cell.Stash = stashCarrier.Inventory
+		_ = ensureEquippedItemForPlayerLocked(livePlayer)
 		return true, fmt.Sprintf("Withdrew %s x%d.", payload.StashItem, amount), model.ActionFeedbackLevelSuccess, cell.ID
 	}
 
@@ -2242,6 +2468,321 @@ func formatHalfHearts(halfHearts uint8) string {
 	return fmt.Sprintf("%d.5", whole)
 }
 
+func isAmmoRestockInProgressLocked(session *matchSession, playerID model.PlayerID) bool {
+	if session == nil || playerID == "" {
+		return false
+	}
+	until := session.ammoRestockUntil[playerID]
+	if until == 0 {
+		return false
+	}
+	return session.tickID < until
+}
+
+func applyReloadCommandLocked(session *matchSession, player *model.PlayerState) bool {
+	if session == nil || player == nil {
+		return false
+	}
+
+	if !player.Alive {
+		return false
+	}
+	if !gamemap.IsAuthorityPlayer(*player) {
+		return applyActionFeedbackLocked(
+			player,
+			model.ActionFeedbackKindSystem,
+			model.ActionFeedbackLevelWarning,
+			"Only guards and the warden can restock ammo.",
+			session.tickID,
+		)
+	}
+	if player.CurrentRoomID != gamemap.RoomAmmoRoom {
+		return applyActionFeedbackLocked(
+			player,
+			model.ActionFeedbackKindSystem,
+			model.ActionFeedbackLevelWarning,
+			"Go to the ammo room to restock.",
+			session.tickID,
+		)
+	}
+	if player.Bullets >= authorityAmmoMax {
+		return applyActionFeedbackLocked(
+			player,
+			model.ActionFeedbackKindSystem,
+			model.ActionFeedbackLevelInfo,
+			"Ammo already full.",
+			session.tickID,
+		)
+	}
+	if isAmmoRestockInProgressLocked(session, player.ID) {
+		remaining := session.ammoRestockUntil[player.ID] - session.tickID
+		rate := uint64(maxTickRate(session.tickRateHz))
+		seconds := int((remaining + rate - 1) / rate)
+		return applyActionFeedbackLocked(
+			player,
+			model.ActionFeedbackKindSystem,
+			model.ActionFeedbackLevelInfo,
+			fmt.Sprintf("Ammo restock in progress (%ds left).", seconds),
+			session.tickID,
+		)
+	}
+
+	durationTicks := uint64(maxTickRate(session.tickRateHz)) * authorityRestockSeconds
+	if durationTicks == 0 {
+		durationTicks = authorityRestockSeconds
+	}
+	if session.ammoRestockUntil == nil {
+		session.ammoRestockUntil = make(map[model.PlayerID]uint64)
+	}
+	session.ammoRestockUntil[player.ID] = session.tickID + durationTicks
+	player.Velocity = model.Vector2{}
+
+	return applyActionFeedbackLocked(
+		player,
+		model.ActionFeedbackKindSystem,
+		model.ActionFeedbackLevelInfo,
+		fmt.Sprintf("Restocking ammo (10s). Hold position in %s.", roomLabelForFeedback(gamemap.RoomAmmoRoom)),
+		session.tickID,
+	)
+}
+
+func resolveAmmoRestockCompletionsLocked(session *matchSession, changedPlayers map[model.PlayerID]struct{}) {
+	if session == nil || len(session.ammoRestockUntil) == 0 {
+		return
+	}
+
+	playerIndex := make(map[model.PlayerID]int, len(session.gameState.Players))
+	for index := range session.gameState.Players {
+		playerIndex[session.gameState.Players[index].ID] = index
+	}
+
+	for playerID, untilTick := range session.ammoRestockUntil {
+		if untilTick == 0 || session.tickID < untilTick {
+			continue
+		}
+		delete(session.ammoRestockUntil, playerID)
+
+		index, exists := playerIndex[playerID]
+		if !exists {
+			continue
+		}
+		player := &session.gameState.Players[index]
+		if !player.Alive || !gamemap.IsAuthorityPlayer(*player) {
+			continue
+		}
+
+		if player.Bullets != authorityAmmoMax {
+			player.Bullets = authorityAmmoMax
+			changedPlayers[player.ID] = struct{}{}
+		}
+		if syncAuthorityBulletStackLocked(player) {
+			changedPlayers[player.ID] = struct{}{}
+		}
+		if applyActionFeedbackLocked(
+			player,
+			model.ActionFeedbackKindSystem,
+			model.ActionFeedbackLevelSuccess,
+			"Ammo restocked to full.",
+			session.tickID,
+		) {
+			changedPlayers[player.ID] = struct{}{}
+		}
+	}
+}
+
+func restoreAuthoritySidearmsForNewDayLocked(session *matchSession) []model.PlayerID {
+	if session == nil || len(session.gameState.Players) == 0 {
+		return nil
+	}
+
+	changed := make([]model.PlayerID, 0, len(session.gameState.Players))
+	for index := range session.gameState.Players {
+		player := &session.gameState.Players[index]
+		if !gamemap.IsAuthorityPlayer(*player) {
+			continue
+		}
+		player.InventorySlots = playerInventorySlotCount
+		normalizeInventoryToPlayerSlotsLocked(player)
+
+		updated := false
+		if !items.HasItem(*player, model.ItemBaton, 1) {
+			updated = items.AddItem(player, model.ItemBaton, 1) || updated
+		}
+		if !items.HasItem(*player, model.ItemPistol, 1) {
+			if !items.AddItem(player, model.ItemPistol, 1) {
+				if evictAuthorityOverflowItemForSidearmLocked(player) {
+					updated = items.AddItem(player, model.ItemPistol, 1) || updated
+				}
+			} else {
+				updated = true
+			}
+		}
+		if syncAuthorityBulletStackLocked(player) {
+			updated = true
+		}
+		if ensureEquippedItemForPlayerLocked(player) {
+			updated = true
+		}
+		if updated {
+			changed = append(changed, player.ID)
+		}
+	}
+	return changed
+}
+
+func evictAuthorityOverflowItemForSidearmLocked(player *model.PlayerState) bool {
+	if player == nil || len(player.Inventory) == 0 {
+		return false
+	}
+
+	for _, stack := range player.Inventory {
+		if stack.Item == model.ItemBaton || stack.Item == model.ItemPistol || stack.Item == model.ItemBullet {
+			continue
+		}
+		if items.RemoveItem(player, stack.Item, stack.Quantity) {
+			return true
+		}
+	}
+
+	for _, stack := range player.Inventory {
+		if stack.Item == model.ItemBullet && stack.Quantity > 0 {
+			return items.RemoveItem(player, stack.Item, stack.Quantity)
+		}
+	}
+	return false
+}
+
+func applyEquipItemCommandLocked(
+	session *matchSession,
+	player *model.PlayerState,
+	payload model.EquipItemPayload,
+) bool {
+	if session == nil || player == nil || !combat.IsSupportedWeapon(payload.Item) {
+		return false
+	}
+
+	if !combat.CanUseWeapon(*player, payload.Item) {
+		return applyActionFeedbackLocked(
+			player,
+			model.ActionFeedbackKindSystem,
+			model.ActionFeedbackLevelWarning,
+			fmt.Sprintf("Cannot equip %s; not in inventory.", payload.Item),
+			session.tickID,
+		)
+	}
+	if player.EquippedItem == payload.Item {
+		return false
+	}
+
+	player.EquippedItem = payload.Item
+	changed := true
+	if applyActionFeedbackLocked(
+		player,
+		model.ActionFeedbackKindSystem,
+		model.ActionFeedbackLevelInfo,
+		fmt.Sprintf("Equipped %s.", payload.Item),
+		session.tickID,
+	) {
+		changed = true
+	}
+	return changed
+}
+
+func expireProjectileEntitiesLocked(
+	session *matchSession,
+	changedEntities map[model.EntityID]struct{},
+	removedEntities map[model.EntityID]struct{},
+) {
+	if session == nil || len(session.projectileExpireTick) == 0 {
+		return
+	}
+
+	keep := make([]model.EntityState, 0, len(session.gameState.Entities))
+	for _, entity := range session.gameState.Entities {
+		expireTick := session.projectileExpireTick[entity.ID]
+		if entity.Kind == model.EntityKindProjectile && expireTick != 0 && session.tickID >= expireTick {
+			delete(session.projectileExpireTick, entity.ID)
+			delete(changedEntities, entity.ID)
+			removedEntities[entity.ID] = struct{}{}
+			continue
+		}
+		if entity.Kind == model.EntityKindProjectile {
+			entity.Position.X += entity.Velocity.X
+			entity.Position.Y += entity.Velocity.Y
+			changedEntities[entity.ID] = struct{}{}
+		}
+		keep = append(keep, entity)
+	}
+	session.gameState.Entities = keep
+}
+
+func spawnProjectileEntityLocked(
+	session *matchSession,
+	shooter model.PlayerState,
+	targetX float32,
+	targetY float32,
+	changedEntities map[model.EntityID]struct{},
+) {
+	if session == nil {
+		return
+	}
+
+	aimX := targetX - shooter.Position.X
+	aimY := targetY - shooter.Position.Y
+	length := float32((aimX * aimX) + (aimY * aimY))
+	if length <= 0 {
+		aimX = shooter.Facing.X
+		aimY = shooter.Facing.Y
+		length = float32((aimX * aimX) + (aimY * aimY))
+	}
+	if length <= 0 {
+		aimX = 1
+		aimY = 0
+		length = 1
+	}
+	magnitude := float32(1.0)
+	if length > 1 {
+		magnitude = float32(1.0 / float32(math.Sqrt(float64(length))))
+	}
+	unitX := aimX * magnitude
+	unitY := aimY * magnitude
+
+	session.nextEntityID++
+	entity := model.EntityState{
+		ID:            session.nextEntityID,
+		Kind:          model.EntityKindProjectile,
+		OwnerPlayerID: shooter.ID,
+		Position: model.Vector2{
+			X: shooter.Position.X + (unitX * 0.4),
+			Y: shooter.Position.Y + (unitY * 0.4),
+		},
+		Velocity: model.Vector2{
+			X: unitX * 1.8,
+			Y: unitY * 1.8,
+		},
+		Active: true,
+		RoomID: shooter.CurrentRoomID,
+	}
+
+	if session.projectileExpireTick == nil {
+		session.projectileExpireTick = make(map[model.EntityID]uint64)
+	}
+	lifetimeTicks := uint64(maxTickRate(session.tickRateHz) / 5)
+	if lifetimeTicks == 0 {
+		lifetimeTicks = 1
+	}
+	session.projectileExpireTick[entity.ID] = session.tickID + lifetimeTicks
+	session.gameState.Entities = append(session.gameState.Entities, entity)
+	changedEntities[entity.ID] = struct{}{}
+}
+
+func maxTickRate(rate uint32) uint32 {
+	if rate == 0 {
+		return 1
+	}
+	return rate
+}
+
 func trySetNightlyBlackMarketLocked(
 	session *matchSession,
 	player model.PlayerState,
@@ -2306,6 +2847,7 @@ func applyBlackMarketPurchaseLocked(
 		_ = items.RemoveItem(player, offer.Item, offer.Quantity)
 		return false, "Payment failed; purchase cancelled.", model.ActionFeedbackLevelError
 	}
+	_ = ensureEquippedItemForPlayerLocked(player)
 
 	if offer.Item == model.ItemGoldenBullet {
 		session.blackMarketGoldenBulletSold = true
@@ -2566,6 +3108,9 @@ func applyAbilityCommandLocked(
 		}
 		applied = true
 		if len(confiscated) > 0 {
+			if ensureEquippedItemForPlayerLocked(target) {
+				changedPlayers[target.ID] = struct{}{}
+			}
 			changedPlayers[target.ID] = struct{}{}
 			feedbackMessage = fmt.Sprintf(
 				"Search report on %s: inv=%s | confiscated=%s.",
@@ -2696,6 +3241,12 @@ func applyAbilityCommandLocked(
 			return denyAbilityUseLocked(session, player, changedPlayers, "target has no stealable items")
 		}
 		if items.TransferItem(target, player, item, 1) {
+			if ensureEquippedItemForPlayerLocked(target) {
+				changedPlayers[target.ID] = struct{}{}
+			}
+			if ensureEquippedItemForPlayerLocked(player) {
+				changedPlayers[player.ID] = struct{}{}
+			}
 			changedPlayers[target.ID] = struct{}{}
 			applied = true
 			feedbackMessage = fmt.Sprintf("Pick-pocket stole %s from %s.", item, target.Name)
@@ -3080,8 +3631,15 @@ func applyCardCommandLocked(
 		}
 
 	case model.CardBullet:
-		if player.Bullets < 255 {
+		maxBullets := uint8(255)
+		if gamemap.IsAuthorityPlayer(*player) {
+			maxBullets = authorityAmmoMax
+		}
+		if player.Bullets < maxBullets {
 			player.Bullets++
+			if syncAuthorityBulletStackLocked(player) {
+				changedPlayers[player.ID] = struct{}{}
+			}
 			applied = true
 		}
 
@@ -3176,6 +3734,12 @@ func applyCardCommandLocked(
 			appliedSteal = transferFirstStackQuantityLocked(target, player, 1)
 		}
 		if appliedSteal {
+			if ensureEquippedItemForPlayerLocked(target) {
+				changedPlayers[target.ID] = struct{}{}
+			}
+			if ensureEquippedItemForPlayerLocked(player) {
+				changedPlayers[player.ID] = struct{}{}
+			}
 			changedPlayers[target.ID] = struct{}{}
 			applied = true
 		}
@@ -3195,6 +3759,12 @@ func applyCardCommandLocked(
 			break
 		}
 		if items.TransferItem(target, player, item, 1) {
+			if ensureEquippedItemForPlayerLocked(target) {
+				changedPlayers[target.ID] = struct{}{}
+			}
+			if ensureEquippedItemForPlayerLocked(player) {
+				changedPlayers[player.ID] = struct{}{}
+			}
 			changedPlayers[target.ID] = struct{}{}
 			applied = true
 		}
@@ -3203,6 +3773,9 @@ func applyCardCommandLocked(
 		addedWood := items.AddItem(player, model.ItemWood, 1)
 		addedMetal := items.AddItem(player, model.ItemMetalSlab, 1)
 		applied = addedWood || addedMetal
+		if applied && ensureEquippedItemForPlayerLocked(player) {
+			changedPlayers[player.ID] = struct{}{}
+		}
 
 	case model.CardDoorStop:
 		if payload.TargetDoorID == 0 || !session.gameState.Map.PowerOn {
@@ -3609,6 +4182,13 @@ func expireTimedStatesLocked(
 			delete(session.chameleonPendingUntil, player.ID)
 		}
 	}
+
+	for index := range session.gameState.Players {
+		player := &session.gameState.Players[index]
+		if ensureEquippedItemForPlayerLocked(player) {
+			changedPlayers[player.ID] = struct{}{}
+		}
+	}
 }
 
 func applyAlarmAndGuardSystemLocked(
@@ -3665,6 +4245,10 @@ func applyAlarmAndGuardSystemLocked(
 		}
 
 		result := combat.ApplyDamage(target, prison.GuardShotDamageHalf)
+		permanentlyEliminated := false
+		if result.Eliminated {
+			_, permanentlyEliminated = consumeLifeAndRespawnIfAvailableLocked(target)
+		}
 		if result.AppliedHalf == 0 {
 			continue
 		}
@@ -3673,10 +4257,14 @@ func applyAlarmAndGuardSystemLocked(
 		changedPlayers[targetID] = struct{}{}
 		feedbackMessage := fmt.Sprintf("Alarm guard hit you for %s heart(s).", formatHalfHearts(result.AppliedHalf))
 		if result.Eliminated {
-			feedbackMessage = "Alarm guards eliminated you in a restricted zone."
+			if permanentlyEliminated {
+				feedbackMessage = "Alarm guards eliminated you in a restricted zone."
+			} else {
+				feedbackMessage = fmt.Sprintf("Alarm guards took a life. %d lives remaining.", target.LivesRemaining)
+			}
 		}
 		feedbackLevel := model.ActionFeedbackLevelWarning
-		if result.Eliminated {
+		if result.Eliminated && permanentlyEliminated {
 			feedbackLevel = model.ActionFeedbackLevelError
 		}
 		if applyActionFeedbackLocked(
@@ -3989,22 +4577,40 @@ func applyFireWeaponCommandLocked(
 	playerIndex map[model.PlayerID]int,
 	occupiedTiles map[gamemap.Point]model.PlayerID,
 	changedPlayers map[model.PlayerID]struct{},
+	changedEntities map[model.EntityID]struct{},
 ) bool {
-	if !combat.IsSupportedWeapon(payload.Weapon) {
-		return false
-	}
-
 	shooterIndex, shooterExists := playerIndex[shooterID]
 	if !shooterExists {
 		return false
 	}
 
 	shooter := &session.gameState.Players[shooterIndex]
-	if !combat.CanUseWeapon(*shooter, payload.Weapon) {
+	weapon := payload.Weapon
+	if !combat.IsSupportedWeapon(weapon) {
+		weapon = shooter.EquippedItem
+	}
+	if !combat.IsSupportedWeapon(weapon) {
 		return false
 	}
+	if !combat.CanUseWeapon(*shooter, weapon) {
+		if weapon != shooter.EquippedItem &&
+			combat.IsSupportedWeapon(shooter.EquippedItem) &&
+			combat.CanUseWeapon(*shooter, shooter.EquippedItem) {
+			weapon = shooter.EquippedItem
+		}
+	}
+	if !combat.CanUseWeapon(*shooter, weapon) {
+		if ensureEquippedItemForPlayerLocked(shooter) {
+			changedPlayers[shooter.ID] = struct{}{}
+		}
+		return false
+	}
+	if shooter.EquippedItem != weapon {
+		shooter.EquippedItem = weapon
+		changedPlayers[shooter.ID] = struct{}{}
+	}
 
-	attackRange := combat.WeaponRangeTiles(payload.Weapon)
+	attackRange := combat.WeaponRangeTiles(weapon)
 	targetID, hasTarget := combat.SelectTarget(
 		session.gameState.Players,
 		shooterID,
@@ -4027,6 +4633,7 @@ func applyFireWeaponCommandLocked(
 	if !target.Alive {
 		return false
 	}
+	targetStateBeforeDamage := *target
 
 	shooterLabel := shooter.Name
 	if shooterLabel == "" {
@@ -4037,13 +4644,19 @@ func applyFireWeaponCommandLocked(
 		targetLabel = string(target.ID)
 	}
 
-	damageHalf, ok := combat.ConsumeShotCostAndResolveDamage(shooter, payload.Weapon, payload.UseGoldenRound)
+	damageHalf, ok := combat.ConsumeShotCostAndResolveDamage(shooter, weapon, payload.UseGoldenRound)
 	if !ok {
 		return false
 	}
 	changedPlayers[shooterID] = struct{}{}
+	if syncAuthorityBulletStackLocked(shooter) {
+		changedPlayers[shooterID] = struct{}{}
+	}
+	if combat.IsFirearm(weapon) {
+		spawnProjectileEntityLocked(session, *shooter, payload.TargetX, payload.TargetY, changedEntities)
+	}
 
-	if payload.Weapon == combat.WeaponBaton {
+	if weapon == combat.WeaponBaton {
 		nextTarget, _ := physics.ApplyKnockback(
 			*target,
 			combat.BatonImpulse(*shooter, *target),
@@ -4083,6 +4696,10 @@ func applyFireWeaponCommandLocked(
 		return true
 	}
 	result := combat.ApplyDamage(target, damageHalf)
+	permanentlyEliminated := false
+	if result.Eliminated {
+		_, permanentlyEliminated = consumeLifeAndRespawnIfAvailableLocked(target)
+	}
 	if result.AppliedHalf == 0 {
 		if applyActionFeedbackLocked(
 			shooter,
@@ -4120,8 +4737,16 @@ func applyFireWeaponCommandLocked(
 	targetFeedbackLevel := model.ActionFeedbackLevelWarning
 	targetFeedbackMessage := fmt.Sprintf("Hit by %s for %s heart(s).", shooterLabel, damageText)
 	if result.Eliminated {
-		targetFeedbackLevel = model.ActionFeedbackLevelError
-		targetFeedbackMessage = fmt.Sprintf("Eliminated by %s.", shooterLabel)
+		if permanentlyEliminated {
+			targetFeedbackLevel = model.ActionFeedbackLevelError
+			targetFeedbackMessage = fmt.Sprintf("Eliminated by %s.", shooterLabel)
+		} else {
+			targetFeedbackMessage = fmt.Sprintf(
+				"Life lost to %s. %d lives remaining.",
+				shooterLabel,
+				target.LivesRemaining,
+			)
+		}
 	}
 	if applyActionFeedbackLocked(
 		target,
@@ -4134,8 +4759,8 @@ func applyFireWeaponCommandLocked(
 	}
 
 	if gamemap.IsAuthorityPlayer(*shooter) &&
-		combat.IsFirearm(payload.Weapon) &&
-		combat.IsUnjustAuthorityShot(*target, session.gameState.Map) {
+		combat.IsFirearm(weapon) &&
+		combat.IsUnjustAuthorityShot(targetStateBeforeDamage, session.gameState.Map) {
 		if combat.ApplyUnjustShotPenalty(shooter, session.gameState.Phase, session.tickID) {
 			changedPlayers[shooterID] = struct{}{}
 			if applyActionFeedbackLocked(
