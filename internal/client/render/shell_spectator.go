@@ -125,7 +125,7 @@ func (s *Shell) drawSpectatorOverlay(screen *ebiten.Image, state model.GameState
 	selectedIndex := s.resolveSpectatorFollowIndex(players)
 	lines := make([]string, 0, len(players)+2)
 	lines = append(lines, fmt.Sprintf("Spectator Follow %d/%d", selectedIndex+1, len(players)))
-	lines = append(lines, "Q/E or Left/Right: switch player")
+	lines = append(lines, "Q/E: switch player")
 	for index, player := range players {
 		prefix := " "
 		if index == selectedIndex {

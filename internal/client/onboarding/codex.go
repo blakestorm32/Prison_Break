@@ -12,12 +12,12 @@ func Pages() []CodexPage {
 		{
 			Title: "Controls Basics",
 			Lines: []string{
-				"Desktop: Move with WASD/Arrows, sprint with Shift.",
-				"Combat: Aim with mouse, fire with Space/LMB, reload with R.",
-				"Interact: Use E/F for doors, pickups, and route interactions.",
+				"Desktop: Move with WASD, sprint with Shift.",
+				"Combat: Aim with mouse, fire with Left Mouse, reload with R.",
+				"Interact: Use E for doors, pickups, and route interactions.",
 				"Ability: Press V to use ability, I for role + ability info.",
-				"Panels: Tab inventory, C cards, B market, X escape routes.",
-				"Spectator: Use Q/E or Left/Right to switch follow camera targets.",
+				"Panels: Tab inventory, C cards, B market, X escape routes, H stash.",
+				"Spectator: Use Q/E to switch follow camera targets.",
 			},
 		},
 		{

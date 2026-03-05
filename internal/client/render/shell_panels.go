@@ -59,12 +59,12 @@ type actionPanelLayout struct {
 }
 
 type actionPanelAvailability struct {
-	inventory bool
-	cards     bool
-	abilities bool
-	market    bool
-	escape    bool
-	stash     bool
+	inventory  bool
+	cards      bool
+	abilities  bool
+	market     bool
+	escape     bool
+	stash      bool
 	nightCards bool
 }
 
@@ -220,7 +220,7 @@ func (s *Shell) updateActionPanelCommands(
 		state.Map.BlackMarketRoomID != "" &&
 		state.Map.BlackMarketRoomID != gamemap.RoomBlackMarket {
 		s.panelLocalHint = fmt.Sprintf(
-			"Tonight's black market is in %s. Go there and press Interact (E/F).",
+			"Tonight's black market is in %s. Go there and press Interact (E).",
 			roomDisplayLabel(state.Map.BlackMarketRoomID),
 		)
 		s.panelLocalHintWarning = true
@@ -486,7 +486,7 @@ func canOpenMarketPanel(local model.PlayerState, state model.GameState) (bool, s
 		return false, "Black-market location is not set this cycle."
 	}
 	if local.CurrentRoomID != state.Map.BlackMarketRoomID {
-		return false, fmt.Sprintf("Go to %s and press Interact (E/F).", roomDisplayLabel(state.Map.BlackMarketRoomID))
+		return false, fmt.Sprintf("Go to %s and press Interact (E).", roomDisplayLabel(state.Map.BlackMarketRoomID))
 	}
 	if state.Phase.Current != model.PhaseNight {
 		return false, "Black market opens at night."
@@ -498,19 +498,19 @@ func marketAccessInstruction(marketRoomID model.RoomID) string {
 	if marketRoomID == "" {
 		return "Black-market location is not set."
 	}
-	return fmt.Sprintf("Go to %s at night and press Interact (E/F) to buy.", roomDisplayLabel(marketRoomID))
+	return fmt.Sprintf("Go to %s at night and press Interact (E) to buy.", roomDisplayLabel(marketRoomID))
 }
 
 func computeActionPanelAvailability(local model.PlayerState, state model.GameState) actionPanelAvailability {
 	prisonerAccess := gamemap.IsPrisonerPlayer(local)
 	cellOwner := local.AssignedCell != 0 && local.CurrentRoomID == gamemap.RoomCellBlockA
 	return actionPanelAvailability{
-		inventory: len(inventoryPanelEntries(local)) > 0,
-		cards:     len(cardPanelEntries(local)) > 0,
-		abilities: len(abilityPanelEntries(local)) > 0,
-		market:    prisonerAccess,
-		escape:    prisonerAccess,
-		stash:     cellOwner,
+		inventory:  len(inventoryPanelEntries(local)) > 0,
+		cards:      len(cardPanelEntries(local)) > 0,
+		abilities:  len(abilityPanelEntries(local)) > 0,
+		market:     prisonerAccess,
+		escape:     prisonerAccess,
+		stash:      cellOwner,
 		nightCards: len(local.NightCardChoices) > 0 && state.Phase.Current == model.PhaseNight,
 	}
 }

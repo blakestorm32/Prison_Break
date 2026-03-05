@@ -296,7 +296,7 @@ func (a *ClientApp) updateInMatch() error {
 		}
 	}
 
-	if inpututil.IsKeyJustPressed(ebiten.KeyEscape) || inpututil.IsKeyJustPressed(ebiten.KeyP) {
+	if inpututil.IsKeyJustPressed(ebiten.KeyEscape) {
 		a.shell.TogglePauseMenu()
 		return nil
 	}

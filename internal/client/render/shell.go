@@ -1328,20 +1328,7 @@ func (s *Shell) filterSnapshotForActionPanels(snapshot input.InputSnapshot) inpu
 }
 
 func (s *Shell) drawPauseMenu(screen *ebiten.Image) {
-	lines := []string{
-		"Pause Menu",
-		"",
-		"Controls",
-		"Move: WASD/Arrows | Sprint: Shift",
-		"Aim/Fire: Mouse + Space/LMB | Equip: 1/2/3",
-		"Interact: E/F | Ability: V | Ability Info: I | Reload: R",
-		"Panels: Tab/C | Escape: X | Stash: H in cell block",
-		"Night cards: popup at night (Arrows + Enter)",
-		"Modal select: Arrow keys + Enter (Esc/X close)",
-		"",
-		"Esc or P: Resume",
-		"Q: Exit match to menu",
-	}
+	lines := pauseMenuLines()
 
 	panelWidth := clampFloat32(estimatePanelWidth(lines), 360, float32(s.screenWidth)-60)
 	panelHeight := float32(42 + (len(lines) * 18))
@@ -1360,6 +1347,33 @@ func (s *Shell) drawPauseMenu(screen *ebiten.Image) {
 			int(panelY)+24+(index*18),
 			color.RGBA{R: 236, G: 243, B: 250, A: 255},
 		)
+	}
+}
+
+func pauseMenuLines() []string {
+	return []string{
+		"Pause Menu",
+		"",
+		"Controls",
+		"Move: W / A / S / D",
+		"Sprint: Shift",
+		"Aim: Mouse",
+		"Fire: Left Mouse",
+		"Equip hand slot: 1 / 2 / 3",
+		"Interact / Use: E",
+		"Use ability: V",
+		"Role + ability info: I",
+		"Reload: R",
+		"Inventory panel: Tab",
+		"Cards panel: C",
+		"Black market panel: B",
+		"Escape panel: X",
+		"Cell stash panel: H (in cell block)",
+		"Modal navigation: Up / Down arrows",
+		"Modal confirm: Enter",
+		"",
+		"Esc: Resume",
+		"Q: Exit match to menu",
 	}
 }
 
@@ -1470,13 +1484,8 @@ func entityFillColor(kind model.EntityKind) color.Color {
 func (s *Shell) captureInputSnapshot() input.InputSnapshot {
 	mouseX, mouseY := ebiten.CursorPosition()
 	aimWorldX, aimWorldY := s.camera.ScreenToWorld(mouseX, mouseY)
-	modalOpen := actionPanelUsesCenteredModal(s.panelMode)
-	panelPrevPressed := ebiten.IsKeyPressed(ebiten.KeyBracketLeft) || ebiten.IsKeyPressed(ebiten.KeyPageUp)
-	panelNextPressed := ebiten.IsKeyPressed(ebiten.KeyBracketRight) || ebiten.IsKeyPressed(ebiten.KeyPageDown)
-	if modalOpen {
-		panelPrevPressed = panelPrevPressed || ebiten.IsKeyPressed(ebiten.KeyArrowUp) || ebiten.IsKeyPressed(ebiten.KeyArrowLeft)
-		panelNextPressed = panelNextPressed || ebiten.IsKeyPressed(ebiten.KeyArrowDown) || ebiten.IsKeyPressed(ebiten.KeyArrowRight)
-	}
+	panelPrevPressed := ebiten.IsKeyPressed(ebiten.KeyArrowUp)
+	panelNextPressed := ebiten.IsKeyPressed(ebiten.KeyArrowDown)
 
 	touchIDs := ebiten.AppendTouchIDs(nil)
 	sort.Slice(touchIDs, func(i int, j int) bool {
@@ -1493,21 +1502,21 @@ func (s *Shell) captureInputSnapshot() input.InputSnapshot {
 	}
 
 	snapshot := input.InputSnapshot{
-		MoveUp:    ebiten.IsKeyPressed(ebiten.KeyW) || ebiten.IsKeyPressed(ebiten.KeyArrowUp),
-		MoveDown:  ebiten.IsKeyPressed(ebiten.KeyS) || ebiten.IsKeyPressed(ebiten.KeyArrowDown),
-		MoveLeft:  ebiten.IsKeyPressed(ebiten.KeyA) || ebiten.IsKeyPressed(ebiten.KeyArrowLeft),
-		MoveRight: ebiten.IsKeyPressed(ebiten.KeyD) || ebiten.IsKeyPressed(ebiten.KeyArrowRight),
-		Sprint:    ebiten.IsKeyPressed(ebiten.KeyShift) || ebiten.IsKeyPressed(ebiten.KeyShiftLeft) || ebiten.IsKeyPressed(ebiten.KeyShiftRight),
+		MoveUp:    ebiten.IsKeyPressed(ebiten.KeyW),
+		MoveDown:  ebiten.IsKeyPressed(ebiten.KeyS),
+		MoveLeft:  ebiten.IsKeyPressed(ebiten.KeyA),
+		MoveRight: ebiten.IsKeyPressed(ebiten.KeyD),
+		Sprint:    ebiten.IsKeyPressed(ebiten.KeyShift),
 
-		EquipSlot1Pressed: ebiten.IsKeyPressed(ebiten.KeyDigit1) || ebiten.IsKeyPressed(ebiten.KeyKP1),
-		EquipSlot2Pressed: ebiten.IsKeyPressed(ebiten.KeyDigit2) || ebiten.IsKeyPressed(ebiten.KeyKP2),
-		EquipSlot3Pressed: ebiten.IsKeyPressed(ebiten.KeyDigit3) || ebiten.IsKeyPressed(ebiten.KeyKP3),
+		EquipSlot1Pressed: ebiten.IsKeyPressed(ebiten.KeyDigit1),
+		EquipSlot2Pressed: ebiten.IsKeyPressed(ebiten.KeyDigit2),
+		EquipSlot3Pressed: ebiten.IsKeyPressed(ebiten.KeyDigit3),
 
-		InteractPressed:    ebiten.IsKeyPressed(ebiten.KeyE) || ebiten.IsKeyPressed(ebiten.KeyF),
-		AbilityPressed:     ebiten.IsKeyPressed(ebiten.KeyV) || ebiten.IsKeyPressed(ebiten.KeyG),
+		InteractPressed:    ebiten.IsKeyPressed(ebiten.KeyE),
+		AbilityPressed:     ebiten.IsKeyPressed(ebiten.KeyV),
 		AbilityInfoPressed: ebiten.IsKeyPressed(ebiten.KeyI),
 		ReloadPressed:      ebiten.IsKeyPressed(ebiten.KeyR),
-		FirePressed:        ebiten.IsKeyPressed(ebiten.KeySpace) || ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft),
+		FirePressed:        ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft),
 
 		HasAim:    true,
 		AimWorldX: aimWorldX,
@@ -1516,14 +1525,14 @@ func (s *Shell) captureInputSnapshot() input.InputSnapshot {
 		PanelInventoryPressed: ebiten.IsKeyPressed(ebiten.KeyTab),
 		PanelCardsPressed:     ebiten.IsKeyPressed(ebiten.KeyC),
 		PanelAbilitiesPressed: false,
-		PanelMarketPressed:    ebiten.IsKeyPressed(ebiten.KeyB) || ebiten.IsKeyPressed(ebiten.KeyM),
+		PanelMarketPressed:    ebiten.IsKeyPressed(ebiten.KeyB),
 		PanelEscapePressed:    ebiten.IsKeyPressed(ebiten.KeyX),
 		PanelStashPressed:     ebiten.IsKeyPressed(ebiten.KeyH),
 		PanelPrevPressed:      panelPrevPressed,
 		PanelNextPressed:      panelNextPressed,
-		PanelUsePressed:       ebiten.IsKeyPressed(ebiten.KeyEnter) || ebiten.IsKeyPressed(ebiten.KeyKPEnter),
-		SpectatorPrevPressed:  ebiten.IsKeyPressed(ebiten.KeyQ) || ebiten.IsKeyPressed(ebiten.KeyArrowLeft),
-		SpectatorNextPressed:  ebiten.IsKeyPressed(ebiten.KeyE) || ebiten.IsKeyPressed(ebiten.KeyArrowRight),
+		PanelUsePressed:       ebiten.IsKeyPressed(ebiten.KeyEnter),
+		SpectatorPrevPressed:  ebiten.IsKeyPressed(ebiten.KeyQ),
+		SpectatorNextPressed:  ebiten.IsKeyPressed(ebiten.KeyE),
 
 		Touches: touches,
 	}

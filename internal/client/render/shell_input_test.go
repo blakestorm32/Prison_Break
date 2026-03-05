@@ -253,3 +253,101 @@ func TestShellUpdateAbilityPressedQueuesUseAbilityCommand(t *testing.T) {
 		t.Fatalf("expected assigned disguise ability payload, got %+v", payload)
 	}
 }
+
+func TestShellUpdateInteractPressedQueuesInteractCommand(t *testing.T) {
+	store := netclient.NewSnapshotStore()
+	state := model.GameState{
+		MatchID: "m-interact-input",
+		TickID:  7,
+		Status:  model.MatchStatusRunning,
+		Map:     gamemap.DefaultPrisonLayout().ToMapState(),
+		Players: []model.PlayerState{
+			{
+				ID:       "p1",
+				Alive:    true,
+				Position: model.Vector2{X: 9, Y: 9},
+			},
+		},
+	}
+	if !store.ApplySnapshot(model.Snapshot{
+		Kind:   model.SnapshotKindFull,
+		TickID: state.TickID,
+		State:  &state,
+	}) {
+		t.Fatalf("expected baseline state apply")
+	}
+
+	shell := NewShell(ShellConfig{
+		ScreenWidth:   1280,
+		ScreenHeight:  720,
+		LocalPlayerID: "p1",
+		Store:         store,
+		Layout:        gamemap.DefaultPrisonLayout(),
+		InputController: input.NewController(input.ControllerConfig{
+			PlayerID: "p1",
+		}),
+		InputSnapshotProvider: func() input.InputSnapshot {
+			return input.InputSnapshot{
+				InteractPressed: true,
+			}
+		},
+	})
+
+	if err := shell.Update(); err != nil {
+		t.Fatalf("update failed: %v", err)
+	}
+
+	commands := shell.DrainOutgoingCommands()
+	if _, found := findCommandByType(commands, model.CmdInteract); !found {
+		t.Fatalf("expected interact command when interact button is pressed, got %+v", commands)
+	}
+}
+
+func TestShellUpdateReloadPressedQueuesReloadCommand(t *testing.T) {
+	store := netclient.NewSnapshotStore()
+	state := model.GameState{
+		MatchID: "m-reload-input",
+		TickID:  11,
+		Status:  model.MatchStatusRunning,
+		Map:     gamemap.DefaultPrisonLayout().ToMapState(),
+		Players: []model.PlayerState{
+			{
+				ID:       "p1",
+				Alive:    true,
+				Position: model.Vector2{X: 9, Y: 9},
+			},
+		},
+	}
+	if !store.ApplySnapshot(model.Snapshot{
+		Kind:   model.SnapshotKindFull,
+		TickID: state.TickID,
+		State:  &state,
+	}) {
+		t.Fatalf("expected baseline state apply")
+	}
+
+	shell := NewShell(ShellConfig{
+		ScreenWidth:   1280,
+		ScreenHeight:  720,
+		LocalPlayerID: "p1",
+		Store:         store,
+		Layout:        gamemap.DefaultPrisonLayout(),
+		InputController: input.NewController(input.ControllerConfig{
+			PlayerID: "p1",
+		}),
+		InputSnapshotProvider: func() input.InputSnapshot {
+			return input.InputSnapshot{
+				ReloadPressed: true,
+			}
+		},
+	})
+
+	if err := shell.Update(); err != nil {
+		t.Fatalf("update failed: %v", err)
+	}
+
+	commands := shell.DrainOutgoingCommands()
+	if _, found := findCommandByType(commands, model.CmdReload); !found {
+		t.Fatalf("expected reload command when reload button is pressed, got %+v", commands)
+	}
+}

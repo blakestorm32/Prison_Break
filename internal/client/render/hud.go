@@ -74,7 +74,7 @@ func BuildHUDLinesWithOptions(state model.GameState, localPlayerID model.PlayerI
 			lines = append(lines, "Follow auto")
 		}
 		lines = append(lines, "Objective Observe the match and coordinate using public information.")
-		lines = append(lines, "SpectatorControls Q/E or Left/Right switch follow target.")
+		lines = append(lines, "SpectatorControls Q/E switch follow target.")
 		lines = append(lines, actionHintLines(options)...)
 		return lines
 	}
@@ -355,7 +355,7 @@ func objectiveProgressSummary(state model.GameState, local model.PlayerState) st
 func actionHintLines(options HUDOptions) []string {
 	lines := make([]string, 0, 2)
 	if options.ShowDesktopActionHints {
-		lines = append(lines, "Controls[Desktop] Move WASD/Arrows | Sprint Shift | Fire Space/LMB | Interact E/F | Ability V | Info I | Reload R | Panels Tab/C/B/X + [ ] + Enter | Menu Esc")
+		lines = append(lines, "Controls[Desktop] Move WASD | Sprint Shift | Aim Mouse | Fire LMB | Interact E | Ability V | Info I | Reload R | Equip 1/2/3 | Panels Tab/C/B/X/H | Modal Arrows+Enter | Menu Esc")
 	}
 	if options.ShowMobileActionHints {
 		lines = append(lines, "Controls[Mobile] Left joystick move | Fire/Use/Ability/Reload buttons + panel tabs/use buttons")
