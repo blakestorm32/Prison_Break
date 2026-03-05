@@ -34,12 +34,25 @@ func TestNPCPrisonerEntitiesSpawnWithBlackMarketLinkedOffers(t *testing.T) {
 	}
 
 	entities := entitiesForTest(manager, match.MatchID)
+	expectedRooms := deterministicNPCPrisonerSpawnRooms(
+		match.MatchID,
+		defaultMatchLayout.ToMapState(),
+		npcPrisonerSpawnCount,
+	)
+	allowedRooms := make(map[model.RoomID]struct{}, len(expectedRooms))
+	for _, roomID := range expectedRooms {
+		allowedRooms[roomID] = struct{}{}
+	}
+
 	npcCount := 0
 	for _, entity := range entities {
 		if entity.Kind != model.EntityKindNPCPrisoner {
 			continue
 		}
 		npcCount++
+		if _, ok := allowedRooms[entity.RoomID]; !ok {
+			t.Fatalf("expected npc prisoner to spawn in allowed room set, room=%s allowed=%v", entity.RoomID, expectedRooms)
+		}
 
 		state := npcPrisonerBribeStateForTest(manager, match.MatchID, entity.ID)
 		if state.OfferItem == "" || state.OfferCost == 0 {
@@ -56,8 +69,8 @@ func TestNPCPrisonerEntitiesSpawnWithBlackMarketLinkedOffers(t *testing.T) {
 			t.Fatalf("expected npc offer stock to start at 1, got %+v", state)
 		}
 	}
-	if npcCount != len(npcPrisonerRooms) {
-		t.Fatalf("expected %d npc prisoner entities, got %d", len(npcPrisonerRooms), npcCount)
+	if npcCount != len(expectedRooms) {
+		t.Fatalf("expected %d npc prisoner entities, got %d", len(expectedRooms), npcCount)
 	}
 }
 

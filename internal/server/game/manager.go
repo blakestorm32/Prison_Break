@@ -201,10 +201,13 @@ type Manager struct {
 
 var defaultMatchLayout = gamemap.DefaultPrisonLayout()
 
-var npcPrisonerRooms = []model.RoomID{
-	gamemap.RoomCafeteria,
-	gamemap.RoomCourtyard,
-	gamemap.RoomCellBlockA,
+const npcPrisonerSpawnCount = 3
+
+var npcPrisonerTaskVisitRooms = npcPrisonerSpawnRoomCandidates(defaultMatchLayout.ToMapState())
+
+type scoredNPCSpawnRoom struct {
+	roomID model.RoomID
+	score  uint64
 }
 
 type managerPhaseHooks struct{}
@@ -2264,7 +2267,10 @@ func deterministicNPCTaskForDay(
 	dayStartTick uint64,
 	entityID model.EntityID,
 ) npcTaskState {
-	visitRooms := append([]model.RoomID(nil), npcPrisonerRooms...)
+	visitRooms := append([]model.RoomID(nil), npcPrisonerTaskVisitRooms...)
+	if len(visitRooms) == 0 {
+		visitRooms = []model.RoomID{gamemap.RoomCorridorMain}
+	}
 	holdItems := []model.ItemType{
 		model.ItemWood,
 		model.ItemMetalSlab,
@@ -4356,6 +4362,76 @@ func newAlarmGuardEntityLocked(session *matchSession, roomID model.RoomID) model
 	}
 }
 
+func npcPrisonerSpawnRoomCandidates(mapState model.MapState) []model.RoomID {
+	rooms := defaultMatchLayout.Rooms()
+	if len(rooms) == 0 {
+		return nil
+	}
+
+	probe := model.PlayerState{
+		ID:      "npc_spawn_probe",
+		Role:    model.RoleGangMember,
+		Faction: model.FactionPrisoner,
+	}
+	candidates := make([]model.RoomID, 0, len(rooms))
+	for _, room := range rooms {
+		if room.ID == "" {
+			continue
+		}
+		if room.IsCorridor || gamemap.CanEnterRoom(probe, room.ID, mapState) {
+			candidates = append(candidates, room.ID)
+		}
+	}
+	sort.Slice(candidates, func(i int, j int) bool {
+		return candidates[i] < candidates[j]
+	})
+	return candidates
+}
+
+func deterministicNPCPrisonerSpawnRooms(
+	matchID model.MatchID,
+	mapState model.MapState,
+	count int,
+) []model.RoomID {
+	if count <= 0 {
+		return nil
+	}
+
+	candidates := npcPrisonerSpawnRoomCandidates(mapState)
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	scored := make([]scoredNPCSpawnRoom, 0, len(candidates))
+	for _, roomID := range candidates {
+		hasher := fnv.New64a()
+		_, _ = hasher.Write([]byte(matchID))
+		_, _ = hasher.Write([]byte{0})
+		_, _ = hasher.Write([]byte(roomID))
+		scored = append(scored, scoredNPCSpawnRoom{
+			roomID: roomID,
+			score:  hasher.Sum64(),
+		})
+	}
+
+	sort.Slice(scored, func(i int, j int) bool {
+		if scored[i].score == scored[j].score {
+			return scored[i].roomID < scored[j].roomID
+		}
+		return scored[i].score < scored[j].score
+	})
+
+	if count > len(scored) {
+		count = len(scored)
+	}
+
+	selected := make([]model.RoomID, 0, count)
+	for index := 0; index < count; index++ {
+		selected = append(selected, scored[index].roomID)
+	}
+	return selected
+}
+
 func spawnNPCPrisonersLocked(session *matchSession) {
 	if session == nil {
 		return
@@ -4364,7 +4440,19 @@ func spawnNPCPrisonersLocked(session *matchSession) {
 		session.npcPrisonerBribeState = make(map[model.EntityID]npcPrisonerBribeState)
 	}
 
-	for _, roomID := range npcPrisonerRooms {
+	spawnRooms := deterministicNPCPrisonerSpawnRooms(
+		session.matchID,
+		session.gameState.Map,
+		npcPrisonerSpawnCount,
+	)
+	if len(spawnRooms) == 0 {
+		spawnRooms = append(spawnRooms, npcPrisonerTaskVisitRooms...)
+	}
+	if len(spawnRooms) == 0 {
+		spawnRooms = append(spawnRooms, gamemap.RoomCorridorMain)
+	}
+
+	for _, roomID := range spawnRooms {
 		session.nextEntityID++
 		entityID := session.nextEntityID
 		offerItem, offerCost, ok := deterministicNPCPrisonerOffer(session.matchID, roomID, entityID, 0)

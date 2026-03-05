@@ -233,9 +233,12 @@ func TestNPCPrisonerTaskAssignAndCompletionRewardsMoneyCards(t *testing.T) {
 }
 
 func TestDeterministicNPCTaskVisitRoomsAlwaysReachableByNPC(t *testing.T) {
-	allowed := make(map[model.RoomID]struct{}, len(npcPrisonerRooms))
-	for _, roomID := range npcPrisonerRooms {
+	allowed := make(map[model.RoomID]struct{}, len(npcPrisonerTaskVisitRooms))
+	for _, roomID := range npcPrisonerTaskVisitRooms {
 		allowed[roomID] = struct{}{}
+	}
+	if len(allowed) == 0 {
+		allowed[gamemap.RoomCorridorMain] = struct{}{}
 	}
 
 	for index := 0; index < 128; index++ {
